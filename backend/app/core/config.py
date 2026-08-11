@@ -5,7 +5,7 @@ import os
 
 class Settings(BaseSettings):
     app_name: str = "QoderRoute"
-    debug: bool = True
+    debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8010
 

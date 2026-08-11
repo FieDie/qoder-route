@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.schemas import (
     AccountCreate, AccountUpdate, AccountOut, AccountPoolStatus, DashboardStats
@@ -175,28 +176,26 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
 
 @router.get("/available")
 async def list_available_accounts(db: AsyncSession = Depends(get_db)):
-    """Only available (non-exhausted, non-cooldown) accounts."""
-    from sqlalchemy import and_
-    
+    """Only available accounts — mirrors the routing filters in get_next_account."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
     stmt = select(Account).where(
         and_(
             Account.is_active == True,
+            Account.is_available == True,
             Account.is_quota_exceeded == False,
-            Account.cooldown_until.is_(None),
+            (Account.quota_remaining.is_(None)) | (Account.quota_remaining > 0),
+            (Account.cooldown_until.is_(None)) | (Account.cooldown_until < now),
+            Account.consecutive_failures < settings.max_consecutive_failures,
         )
     )
     result = await db.execute(stmt)
     accounts = result.scalars().all()
-    
-    count_available = len(accounts)
-    count_exhausted = 0
-    for acc in accounts:
-        if acc.is_quota_exceeded:
-            count_exhausted += 1
-    
+
     return {
         "filter": "available",
-        "count": count_available,
+        "count": len(accounts),
         "accounts": [AccountOut.model_validate(a) for a in accounts],
     }
 
@@ -246,6 +245,7 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
         pat_token=body.pat_token,
         priority=body.priority,
         model_level=body.model_level,
+        default_model=body.default_model,
     )
     await pool.refresh_quota(account.id)
     refreshed = await pool.get_account_by_id(db, account.id)

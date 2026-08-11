@@ -156,4 +156,6 @@ if FRONTEND_DIST.exists():
     @app.get("/{full_path:path}")
     async def spa_fallback(full_path: str):
         """SPA catch-all: serve index.html for any non-API route."""
+        if full_path.startswith(("api/", "v1/")):
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
         return FileResponse(FRONTEND_DIST / "index.html")

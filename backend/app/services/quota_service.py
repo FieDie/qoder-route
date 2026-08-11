@@ -206,7 +206,12 @@ async def get_uid(pat: str) -> Optional[str]:
 
 
 def looks_like_quota_error(message: str) -> bool:
-    """Heuristic: does an upstream error message mean quota exhaustion?"""
+    """Heuristic: does an upstream error message mean quota exhaustion?
+
+    Deliberately excludes 429 / rate-limit markers — those are transient
+    backpressure, not a spent plan. Treating them as quota exhaustion parks
+    (or auto-deletes) a perfectly healthy account.
+    """
     m = (message or "").lower()
     return any(
         k in m
@@ -216,11 +221,14 @@ def looks_like_quota_error(message: str) -> bool:
             "credit_exhausted",
             "isquotaexceeded",
             "insufficient credits",
-            "upgrade",
-            "rate limit",
-            "429",
         )
     )
+
+
+def looks_like_rate_limit(message: str) -> bool:
+    """Heuristic: transient 429 / rate-limit backpressure (not quota)."""
+    m = (message or "").lower()
+    return "rate limit" in m or "rate_limit" in m or "ratelimit" in m or "429" in m
 
 
 MODEL_QUEUE_ERROR_CODE = "10605"

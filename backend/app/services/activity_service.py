@@ -324,7 +324,10 @@ async def attach_machine_identity_from_attempt(
             continue
         account_info = payload.get("account") if isinstance(payload, dict) else None
         attempt_email = account_info.get("email") if isinstance(account_info, dict) else None
-        if email and attempt_email and str(attempt_email).casefold() != email.casefold():
+        # An account with a known email only accepts attempt files carrying
+        # that SAME email. A file without an email is not a wildcard — it
+        # would attach a random machine identity to this account.
+        if email and str(attempt_email or "").casefold() != email.casefold():
             continue
         machine_id = payload.get("machine_id") if isinstance(payload, dict) else None
         machine_token = payload.get("machine_token") if isinstance(payload, dict) else None

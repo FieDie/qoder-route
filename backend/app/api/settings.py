@@ -1,10 +1,11 @@
 import logging
 from typing import Literal, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services import settings_service
+from app.services.settings_service import PROBE_INTERVALS
 
 logger = logging.getLogger("qoderroute.api.settings")
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -31,6 +32,11 @@ async def get_settings():
 @router.put("")
 async def update_settings(body: SettingsUpdate):
     values = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "probe_interval_minutes" in values and values["probe_interval_minutes"] not in PROBE_INTERVALS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"probe_interval_minutes must be one of {list(PROBE_INTERVALS)}",
+        )
     updated = await settings_service.update(values)
 
     # Flipping auto-delete on sweeps the pool right away — every currently

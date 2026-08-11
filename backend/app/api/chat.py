@@ -16,6 +16,7 @@ from app.services.qoder_client import resolve_model_level
 from app.services.quota_service import (
     looks_like_quota_error,
     looks_like_model_queue,
+    looks_like_rate_limit,
     looks_like_transient_stream_error,
     parse_model_queue,
 )
@@ -511,8 +512,14 @@ def _sse_response(
                     elif error_kind == "infrastructure":
                         logbus.push("error", "chat", f"local infrastructure error (stream): {event['message'][:200]}", account_id=account_id, model=model_level)
                     else:
-                        logbus.push("error", "chat", f"stream error: {event['message'][:200]}", account_id=account_id, model=model_level)
-                        await pool.mark_failure(account_id, event["message"])
+                        msg = event["message"]
+                        if looks_like_transient_stream_error(msg) or looks_like_rate_limit(msg):
+                            # flaky network / upstream backpressure — not the
+                            # account's fault, don't burn its failure budget
+                            logbus.push("warn", "chat", f"transient stream error (no account penalty): {msg[:200]}", account_id=account_id, model=model_level)
+                        else:
+                            logbus.push("error", "chat", f"stream error: {msg[:200]}", account_id=account_id, model=model_level)
+                            await pool.mark_failure(account_id, msg)
                     yield _openai_chunk(chunk_id, model, created, {"content": f"[error] {event['message']}"}, "stop")
         except Exception as e:
             errored = True

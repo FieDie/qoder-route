@@ -6,6 +6,7 @@ from typing import Optional
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.database import async_session
 from app.models.account import Account
@@ -213,6 +214,11 @@ class AccountPool:
 
             # PAT proved healthy — drop the sticky error so the UI recovers.
             acc.last_error_message = None
+            # Un-park: quota came back, so the account rejoins routing right
+            # away instead of waiting for the next pool refresh sweep.
+            acc.is_available = True
+            acc.cooldown_until = None
+            acc.consecutive_failures = 0
 
             await session.commit()
             return data
@@ -310,96 +316,124 @@ class AccountPool:
         model_level: Optional[str] = None,
     ) -> bool:
         """Persist a successful call; return whether a free activity slot paid."""
-        async with async_session() as session:
-            acc = await session.get(Account, account_id)
-            if not acc:
-                return False
+        try:
+            async with async_session() as session:
+                acc = await session.get(Account, account_id)
+                if not acc:
+                    return False
 
-            acc.last_used_at = _utcnow()
-            acc.consecutive_failures = 0
-            acc.last_error_message = None
-            # A successful free activity call does not replenish the regular
-            # credit quota. Keep exhausted accounts out of other models.
-            acc.is_available = not acc.is_quota_exceeded
-            acc.cooldown_until = None
-            acc.total_requests = (acc.total_requests or 0) + 1
-            acc.total_tokens = (acc.total_tokens or 0) + tokens_used
+                acc.last_used_at = _utcnow()
+                acc.consecutive_failures = 0
+                acc.last_error_message = None
+                # A successful free activity call does not replenish the regular
+                # credit quota. Keep exhausted accounts out of other models.
+                acc.is_available = not acc.is_quota_exceeded
+                acc.cooldown_until = None
 
-            # One successful upstream completion is one campaign invocation.
-            # Keep this atomic so concurrent tool-loop turns cannot overwrite
-            # each other's local estimate.
-            activity_consumed = False
-            if model_level == "qmodel_38max":
-                now_ms = time.time() * 1000
-                await session.flush()
-                activity_result = await session.execute(
-                    _activity_decrement_statement(account_id, now_ms)
-                )
-                activity_consumed = getattr(activity_result, "rowcount", 0) > 0
-
-            billable_credits = 0.0 if activity_consumed else credits_used
-            if activity_consumed and credits_used:
-                logger.warning(
-                    "Upstream reported %.6f credits for activity call on account %s; "
-                    "suppressing local charge",
-                    credits_used,
-                    account_id,
-                )
-                logbus.push(
-                    "warn",
-                    "activity",
-                    "upstream reported credits for free activity call; local charge suppressed",
-                    account_id=account_id,
-                    upstream_credits=credits_used,
+                # Counters via SQL expressions — concurrent completions on the
+                # same account must not lose updates (fill-first routing makes
+                # parallel calls on one account common).
+                await session.execute(
+                    update(Account)
+                    .where(Account.id == account_id)
+                    .values(
+                        total_requests=func.coalesce(Account.total_requests, 0) + 1,
+                        total_tokens=func.coalesce(Account.total_tokens, 0) + tokens_used,
+                    )
+                    .execution_options(synchronize_session=False)
                 )
 
-            # Lifetime pool counter — survives account purges.
-            if billable_credits:
-                counter = await session.get(PoolCounter, CREDITS_SPENT_KEY)
-                if counter is None:
-                    counter = PoolCounter(key=CREDITS_SPENT_KEY, value=0.0)
-                    session.add(counter)
-                counter.value += billable_credits
+                # One successful upstream completion is one campaign invocation.
+                # Keep this atomic so concurrent tool-loop turns cannot overwrite
+                # each other's local estimate.
+                activity_consumed = False
+                if model_level == "qmodel_38max":
+                    now_ms = time.time() * 1000
+                    await session.flush()
+                    activity_result = await session.execute(
+                        _activity_decrement_statement(account_id, now_ms)
+                    )
+                    activity_consumed = getattr(activity_result, "rowcount", 0) > 0
 
-            # Drain local quota estimate; keep used+remaining in sync so the bar matches.
-            if billable_credits and acc.quota_remaining is not None:
-                acc.quota_remaining = max(0.0, acc.quota_remaining - billable_credits)
-                if acc.quota_used is not None:
-                    acc.quota_used = acc.quota_used + billable_credits
-                if acc.quota_remaining <= 0:
-                    await self._park_exhausted(session, acc, "quota drained locally")
-                    return activity_consumed
+                billable_credits = 0.0 if activity_consumed else credits_used
+                if activity_consumed and credits_used:
+                    logger.warning(
+                        "Upstream reported %.6f credits for activity call on account %s; "
+                        "suppressing local charge",
+                        credits_used,
+                        account_id,
+                    )
+                    logbus.push(
+                        "warn",
+                        "activity",
+                        "upstream reported credits for free activity call; local charge suppressed",
+                        account_id=account_id,
+                        upstream_credits=credits_used,
+                    )
 
-            await session.commit()
-            return activity_consumed
+                # Lifetime pool counter — survives account purges.
+                if billable_credits:
+                    counter = await session.get(PoolCounter, CREDITS_SPENT_KEY)
+                    if counter is None:
+                        counter = PoolCounter(key=CREDITS_SPENT_KEY, value=0.0)
+                        session.add(counter)
+                    counter.value += billable_credits
+
+                # Drain local quota estimate; keep used+remaining in sync so the bar matches.
+                if billable_credits and acc.quota_remaining is not None:
+                    acc.quota_remaining = max(0.0, acc.quota_remaining - billable_credits)
+                    if acc.quota_used is not None:
+                        acc.quota_used = acc.quota_used + billable_credits
+                    if acc.quota_remaining <= 0:
+                        await self._park_exhausted(session, acc, "quota drained locally")
+                        return activity_consumed
+
+                await session.commit()
+                return activity_consumed
+        except StaleDataError:
+            # The account row was deleted (manual delete / auto-delete sweep)
+            # while the request was in flight. The upstream completion itself
+            # succeeded — nothing left to book.
+            logger.warning(
+                "mark_success: account %s deleted concurrently; skipping bookkeeping",
+                account_id,
+            )
+            return False
 
     async def mark_failure(self, account_id: int, error_message: str = ""):
-        async with async_session() as session:
-            acc = await session.get(Account, account_id)
-            if not acc:
-                return
+        try:
+            async with async_session() as session:
+                acc = await session.get(Account, account_id)
+                if not acc:
+                    return
 
-            new_failures = acc.consecutive_failures + 1
-            cooldown_until = None
-            is_available = True
+                new_failures = acc.consecutive_failures + 1
+                cooldown_until = None
+                is_available = True
 
-            if new_failures >= settings.max_consecutive_failures:
-                backoff = 2 ** (new_failures - settings.max_consecutive_failures + 1)
-                cooldown_until = _utcnow() + timedelta(
-                    seconds=settings.account_cooldown_seconds * backoff
-                )
-                is_available = False
-                logger.warning(
-                    "Account %s cooldown until %s (%d failures)",
-                    acc.name, cooldown_until, new_failures,
-                )
+                if new_failures >= settings.max_consecutive_failures:
+                    backoff = 2 ** (new_failures - settings.max_consecutive_failures + 1)
+                    cooldown_until = _utcnow() + timedelta(
+                        seconds=settings.account_cooldown_seconds * backoff
+                    )
+                    is_available = False
+                    logger.warning(
+                        "Account %s cooldown until %s (%d failures)",
+                        acc.name, cooldown_until, new_failures,
+                    )
 
-            acc.consecutive_failures = new_failures
-            acc.last_error_at = _utcnow()
-            acc.last_error_message = error_message[:512]
-            acc.cooldown_until = cooldown_until
-            acc.is_available = is_available
-            await session.commit()
+                acc.consecutive_failures = new_failures
+                acc.last_error_at = _utcnow()
+                acc.last_error_message = error_message[:512]
+                acc.cooldown_until = cooldown_until
+                # An exhausted account stays parked — failures don't revive it.
+                acc.is_available = is_available and not acc.is_quota_exceeded
+                await session.commit()
+        except StaleDataError:
+            logger.warning(
+                "mark_failure: account %s deleted concurrently; skipping",
+                account_id,
+            )
 
     async def list_accounts(self, session: AsyncSession) -> list[Account]:
         stmt = select(Account).order_by(Account.priority.desc(), Account.id.asc())
@@ -411,7 +445,7 @@ class AccountPool:
 
     async def add_account(
         self, session: AsyncSession, name: str, pat_token: str,
-        priority: int = 0, model_level: str = "auto",
+        priority: int = 0, model_level: str = "auto", default_model: str = "",
     ) -> Account:
         account = Account(
             name=name,
@@ -419,6 +453,7 @@ class AccountPool:
             pat_short=pat_token[:12] + "..." if len(pat_token) > 15 else pat_token,
             priority=priority,
             model_level=model_level,
+            default_model=default_model,
         )
         session.add(account)
         await session.commit()

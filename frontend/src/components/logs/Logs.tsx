@@ -103,8 +103,9 @@ export function Logs() {
   }, [events.length, paused])
 
   const clear = () => {
+    // Keep lastSeqRef as-is: on SSE reconnect the server replays its buffer,
+    // and only the seq filter keeps already-cleared events from reappearing.
     setEvents([])
-    lastSeqRef.current = 0
   }
 
   return (
