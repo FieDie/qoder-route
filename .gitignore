@@ -38,7 +38,7 @@ credentials.env
 .DS_Store
 Thumbs.db
 
-# worker (trial activation) - excluded from public build
+# optional modules
 backend/app/api/worker.py
 backend/app/services/worker_runner.py
 backend/app/services/worker_pool.py
