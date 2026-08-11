@@ -63,13 +63,7 @@ Background Loops:
 
 ### Prerequisites
 
-Ensure you have the WASM auth module extracted from Qoder CLI 1.1.17. Place it at:
-
-```
-backend/signer/qoder_auth_wasm.wasm
-```
-
-Without this file, the signer cannot start and the backend will fail to initialize.
+The repo ships with the WASM auth module (`backend/signer/qoder_auth_wasm.wasm`, extracted from Qoder CLI 1.1.17) — no extra steps needed, the signer works out of the box.
 
 ### Backend Installation
 

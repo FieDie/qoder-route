@@ -41,7 +41,7 @@ This document provides structural, operational, and conventions guidance for age
 │   │   └── main.py                   # FastAPI app factory, lifespan, static mounting, router registration
 │   ├── data/                         # SQLite DB, logs, pidfiles (gitignored)
 │   ├── signer/
-│   │   ├── qoder_auth_wasm.wasm      # Required WASM auth module (Qoder CLI 1.1.17 extracted) NOT IN PUBLIC REPO
+│   │   ├── qoder_auth_wasm.wasm      # WASM auth module (Qoder CLI 1.1.17 extracted), shipped in-repo
 │   │   ├── signer_server.mjs         # Node.js HTTP server on 127.0.0.1:8123 (WASM glue)
 │   │   └── signer.log/pid/.start.lock (runtime files)
 │   ├── tests/                        # pytest test suite (asyncio)
