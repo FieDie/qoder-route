@@ -24,6 +24,8 @@ _DEFAULTS: dict[str, SettingValue] = {
     "accounts_show_email": True,
     "accounts_show_tokens": True,
     "accounts_show_requests": True,
+    "accounts_auto_delete_exhausted": False,
+    "accounts_auto_delete_keep_activity": True,
     "account_activity_checks_enabled": True,
     "qoder_infer_base": "api3",
     "probe_interval_minutes": 15,

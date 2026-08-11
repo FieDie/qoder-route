@@ -249,6 +249,24 @@ export function Settings() {
               checked={data?.accounts_show_requests ?? true}
               onChange={(v) => set({ accounts_show_requests: v })}
             />
+            <div className="pt-2" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+              <SettingRow
+                title="Auto-delete exhausted"
+                hint="Delete exhausted accounts immediately instead of parking them. Turning this on also removes ALL currently exhausted accounts at once."
+                checked={data?.accounts_auto_delete_exhausted ?? false}
+                onChange={(v) => set({ accounts_auto_delete_exhausted: v })}
+              />
+            </div>
+            {(data?.accounts_auto_delete_exhausted ?? false) && (
+              <div className="pl-9">
+                <SettingRow
+                  title="Keep accounts with active reward"
+                  hint="Skip auto-delete for accounts that still have an unclaimed free-call activity (reward) running."
+                  checked={data?.accounts_auto_delete_keep_activity ?? true}
+                  onChange={(v) => set({ accounts_auto_delete_keep_activity: v })}
+                />
+              </div>
+            )}
           </div>
         )}
       </Card>

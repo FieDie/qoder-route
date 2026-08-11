@@ -91,6 +91,8 @@ export interface AppSettings {
   accounts_show_email: boolean
   accounts_show_tokens: boolean
   accounts_show_requests: boolean
+  accounts_auto_delete_exhausted: boolean
+  accounts_auto_delete_keep_activity: boolean
   account_activity_checks_enabled: boolean
   qoder_infer_base: QoderInferBase
   probe_interval_minutes: number

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import async_session
 from app.models.account import Account
 from app.models.pool_counter import PoolCounter, CREDITS_SPENT_KEY
+from app.services import settings_service
 from app.core.config import settings
 from app.services import quota_service, logbus
 
@@ -216,12 +217,50 @@ class AccountPool:
             await session.commit()
             return data
 
+    def _auto_delete_allowed_for(self, acc: Account) -> bool:
+        """Auto-delete setting gates: main toggle on, keep-activity respected."""
+        if not settings_service.get("accounts_auto_delete_exhausted"):
+            return False
+        if settings_service.get("accounts_auto_delete_keep_activity"):
+            if acc.activity_status == "active" and (acc.activity_remaining or 0) > 0:
+                return False
+        return True
+
+    async def delete_exhausted_accounts(self) -> int:
+        """Bulk-delete every exhausted account (used when the setting turns on)."""
+        async with async_session() as session:
+            stmt = select(Account).where(Account.is_quota_exceeded == True)
+            result = await session.execute(stmt)
+            doomed = [a for a in result.scalars().all() if self._auto_delete_allowed_for(a)]
+            for acc in doomed:
+                logger.warning("Auto-deleting exhausted account %s (%d)", acc.name, acc.id)
+                logbus.push(
+                    "warn", "pool",
+                    f"account auto-deleted (exhausted): {acc.name} (id {acc.id})",
+                    account_id=acc.id, account_name=acc.name,
+                )
+                await session.delete(acc)
+            await session.commit()
+        if doomed:
+            await self._refresh()
+        return len(doomed)
+
     async def _park_exhausted(self, session: AsyncSession, acc: Account, reason: str):
         """Quota exhausted — keep the account in the pool but out of rotation.
 
         It stays visible ("quiet") and automatically rejoins routing if a
         later quota refresh shows credits again (mapping clears the flag).
+        When auto-delete is enabled the account is removed instead of parked.
         """
+        if self._auto_delete_allowed_for(acc):
+            logger.warning(
+                "Account %s (%d) exhausted (%s); auto-deleting",
+                acc.name, acc.id, reason,
+            )
+            logbus.push("warn", "pool", f"account auto-deleted (exhausted): {acc.name} (id {acc.id})", account_id=acc.id, account_name=acc.name, reason=reason)
+            await session.delete(acc)
+            await session.commit()
+            return
         logger.warning(
             "Account %s (%d) exhausted (%s); parking",
             acc.name, acc.id, reason,
