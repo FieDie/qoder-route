@@ -164,6 +164,11 @@ async def fetch_plan_quota(pat: str) -> Optional[dict]:
                 result.update(_parse_plan(plan))
             if quota:
                 result.update(_parse_quota(quota))
+            result["plan_name"] = _plan_name_from_quota(
+                str(result.get("plan_tier") or ""),
+                str(result.get("plan_name") or ""),
+                result.get("quota_total"),
+            )
             if userinfo and userinfo.get("email"):
                 result["email"] = str(userinfo["email"])
             result["quota_fetched_at"] = time.time()
@@ -171,6 +176,27 @@ async def fetch_plan_quota(pat: str) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"fetch_plan_quota error: {e}")
         return None
+
+
+# Paid tiers are indistinguishable in the plan endpoint payload — the only
+# reliable discriminator is the quota size. Map total credits to a display
+# name (trials keep their own name from plan_tier_name; 300-credit trials
+# are detected via the tier string, not the quota).
+_PLAN_NAME_BY_QUOTA = (
+    (20_000, "Ultra Plan"),
+    (6_000, "Pro+ Plan"),
+    (2_000, "Pro Plan"),
+)
+
+
+def _plan_name_from_quota(plan_tier: str, plan_name: str, quota_total) -> str:
+    if "trial" in (plan_tier or "").lower():
+        return plan_name  # trial name comes from the API already
+    if isinstance(quota_total, (int, float)) and quota_total > 0:
+        for threshold, name in _PLAN_NAME_BY_QUOTA:
+            if quota_total >= threshold:
+                return name
+    return plan_name
 
 
 async def get_job_token(pat: str) -> Optional[str]:
