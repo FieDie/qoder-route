@@ -228,18 +228,16 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
     if not valid:
         raise HTTPException(status_code=400, detail=f"Token validation failed: {msg}")
 
-    # Reject free-plan accounts with no usable quota up front — they would
-    # just be parked as exhausted on the first quota refresh anyway.
+    # Reject plan-less (free tier) accounts up front. An account WITH a plan
+    # but no quota is still added — the quota refresh parks it as exhausted,
+    # and it can return to rotation when the plan renews.
     pq = await quota_service.fetch_plan_quota(body.pat_token)
     if pq is not None:
-        remaining = pq.get("quota_remaining")
-        exhausted = bool(pq.get("is_quota_exceeded"))
-        if exhausted or (remaining is not None and remaining <= 0):
-            tier = pq.get("plan_tier") or "personal_standard"
-            plan_name = pq.get("plan_name") or "Free"
+        tier = str(pq.get("plan_tier") or "").strip().lower()
+        if tier == "personal_standard":
             raise HTTPException(
                 status_code=400,
-                detail=f"No paid plan and no quota — plan is {plan_name} ({tier}). Account not added.",
+                detail="Free plan (personal_standard) — this account has no paid plan. Not added.",
             )
 
     account = await pool.add_account(
