@@ -15,6 +15,7 @@ from app.services.account_pool import pool
 from app.services.qoder_client import validate_pat, QODER_MODEL_DISPLAY
 from app.services import logbus
 from app.services import activity_service
+from app.services import quota_service
 
 logger = logging.getLogger("qoderroute.api.accounts")
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
@@ -226,6 +227,20 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
     valid, msg = await validate_pat(body.pat_token)
     if not valid:
         raise HTTPException(status_code=400, detail=f"Token validation failed: {msg}")
+
+    # Reject free-plan accounts with no usable quota up front — they would
+    # just be parked as exhausted on the first quota refresh anyway.
+    pq = await quota_service.fetch_plan_quota(body.pat_token)
+    if pq is not None:
+        remaining = pq.get("quota_remaining")
+        exhausted = bool(pq.get("is_quota_exceeded"))
+        if exhausted or (remaining is not None and remaining <= 0):
+            tier = pq.get("plan_tier") or "personal_standard"
+            plan_name = pq.get("plan_name") or "Free"
+            raise HTTPException(
+                status_code=400,
+                detail=f"No paid plan and no quota — plan is {plan_name} ({tier}). Account not added.",
+            )
 
     account = await pool.add_account(
         db,
