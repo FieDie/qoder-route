@@ -100,10 +100,18 @@ async def list_models_via_cli(pat_token: str) -> list[str]:
 
 
 async def validate_pat(pat_token: str) -> tuple[bool, str]:
-    models = await list_models_via_cli(pat_token)
-    if models:
+    """Lightweight PAT check over HTTP: job-token exchange + userinfo.
+
+    No qodercli dependency — a PAT is valid when the exchange yields a token
+    and userinfo answers with an account id."""
+    from app.services import quota_service
+    try:
+        uid = await quota_service.get_uid(pat_token)
+    except Exception:
+        uid = None
+    if uid:
         return True, "Valid"
-    return False, "Token validation failed — no models returned"
+    return False, "token validation failed — no uid from userinfo"
 
 
 async def exchange_job_token(pat_token: str) -> Optional[str]:
