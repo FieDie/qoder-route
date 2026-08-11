@@ -154,13 +154,25 @@ QoderRoute/
 
 ## Gotchas
 
+- **429 / Rate-Limit Is NOT Quota Exhaustion**  
+  `looks_like_quota_error()` deliberately excludes 429/rate-limit markers — those are transient backpressure handled via `looks_like_rate_limit()` and the normal failure-cooldown path. Only genuine quota markers (`quota`, `credits exhausted`, `isquotaexceeded`, `insufficient credits`) park an account. Never add rate-limit patterns back into the quota matcher: with auto-delete enabled that silently destroys healthy accounts.
+
+- **Backend Datetimes Are Naive UTC**  
+  `_utcnow()` stores naive UTC datetimes; JSON responses contain strings like `"2026-08-11T10:00:00"` with no offset marker. The frontend MUST parse them as UTC (`lib/utils.ts: parseUtc` appends `Z`) — plain `new Date(s)` would parse them as browser-local time. Epoch-float fields (`plan_end_date`, `quota_expires_at`, `activity_expires_at`, `*_fetched_at`) are milliseconds and unaffected.
+
+- **Plan Display Names Come From Quota Size**  
+  The Qoder plan endpoint cannot distinguish paid tiers. `quota_service._plan_name_from_quota()` maps `quota_total` to names: ≥2,000 → Pro Plan, ≥6,000 → Pro+ Plan, ≥20,000 → Ultra Plan. Trial tiers (`personal_professional_trial`) keep the API-reported name. Do not "fix" this by trusting `plan_tier_name` for paid tiers.
+
 - **Worker Files Are GitIgnored & Conditionally Imported**  
   The optional worker/trial activation modules (`worker.py`, `worker_runner.py`, `worker_pool.py`, and the frontend `worker/` directory) are gitignored and not shipped in the public build. Imports are guarded:
   - Frontend: `import.meta.glob()` in `lib/features.ts` resolves to `undefined` when absent; `WORKER_ENABLED` and `WorkerPage` become falsy/null.
   - Backend: `try/except ImportError` in `app/main.py` allows startup without these modules. Do not assume their presence in tests or production builds where they are excluded.
 
 - **Exhausted Accounts Are Not Polled**  
-  The background quota loop (`_quota_refresher`) only refreshes non-exhausted accounts (`is_quota_exceeded == False`). Exhausted accounts remain untouched until manually refreshed via `/api/accounts/{id}/quota/refresh` (which may un-park them if credits are renewed). This prevents unnecessary traffic to users that have truly exited rotation.
+  The background quota loop (`_quota_refresher`) only refreshes non-exhausted accounts (`is_quota_exceeded == False`). Exhausted accounts remain untouched until manually refreshed via `/api/accounts/{id}/quota/refresh` — which, when credits are back, also restores `is_available`, clears cooldown/failures, and rejoins routing immediately. With `accounts_auto_delete_exhausted` enabled, parking is replaced by deletion (skipped for accounts with an active free-call activity when `accounts_auto_delete_keep_activity` is on).
+
+- **Concurrent Delete vs In-Flight Request**  
+  `mark_success` / `mark_failure` catch `StaleDataError`: an account deleted (manual or auto-sweep) while its request was streaming must not turn a successful completion into a 500. Keep these handlers in place when editing bookkeeping code.
 
 - **Account Deletion Invalidates Multiple Query Keys**  
   Deleting an account triggers immediate cache invalidation in `useDeleteAccount()`:

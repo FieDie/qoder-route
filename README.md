@@ -8,7 +8,13 @@ QoderRoute is an OpenAI-compatible proxy router for Qoder (qoder.sh). It maintai
   Accounts are ordered by priority (descending) then ID (ascending). The first available account with remaining quota serves until it exhausts, then the next in line takes over. For Qwen3.8-Max (`qmodel_38max`), accounts whose credit quota is exhausted but that have an active free-call campaign are prioritized.
 
 - **Quota Tracking & Plan Metadata**  
-  Every account's plan tier, name, end date, and quota usage are fetched from `openapi.qoder.sh`. The background loop refreshes this every 5 minutes. Account cards display plan type, paid/free status, plan end date, and quota progress. When an account hits quota, it is parked and will automatically rejoin rotation once credits renew.
+  Every account's plan tier, name, end date, and quota usage are fetched from `openapi.qoder.sh`. The background loop refreshes this every 5 minutes. Account cards display plan type, paid/free status, plan end date, and quota progress. When an account hits quota, it is parked and will automatically rejoin rotation once credits renew. Paid plan names are derived from the quota size, since the plan endpoint does not distinguish tiers: 2,000 credits → Pro Plan, 6,000 → Pro+ Plan, 20,000 → Ultra Plan (trials keep their API-reported name, e.g. Pro Trial with 300 credits).
+
+- **Free-Tier Rejection on Add**  
+  Adding an account validates the PAT over HTTP (job-token exchange + userinfo — no CLI required) and then checks the plan. Accounts on the free tier (`personal_standard`, no paid plan) are rejected with a clear error instead of being parked as exhausted right away. Accounts with a plan but no remaining quota are still added and parked, so they rejoin automatically when the plan renews.
+
+- **Rate-Limit vs Quota Distinction**  
+  Transient 429 / rate-limit responses never park or delete an account — only genuine quota-exhaustion signals do (quota / credits-exhausted markers). Rate-limited accounts get the normal failure cooldown and recover automatically.
 
 - **Free-Call Activity / Reward Support for Qwen3.8-Max**  
   Accounts can participate in the Qwen3.8-Max activity campaign (`qwen38_800_invoke`). The system checks eligibility, claims activity, fetches signed balances, and uses one free invocation per completion instead of deducting credits when the campaign is active.
@@ -134,14 +140,14 @@ Environment variables are loaded from `backend/.env` (pydantic-settings field ma
 
 | Variable                   | Default                              | Description                                             |
 |----------------------------|--------------------------------------|---------------------------------------------------------|
-| `DEBUG`                    | `True`                               | Enable debug mode / SQL echo                           |
+| `DEBUG`                    | `False`                              | Enable debug mode / SQL echo                           |
 | `HOST`                     | `0.0.0.0`                            | Host to bind to                                         |
 | `PORT`                     | `8010`                               | HTTP port                                               |
 | `DATABASE_URL`             | `sqlite+aiosqlite:///./data/qoderroute.db` | Database URL                                          |
-| `JWT_SECRET`               | `qoderroute-super-secret-key...`     | Secret key for JWT authentication                       |
-| `JWT_ALGORITHM`            | `HS256`                              | JWT algorithm                                           |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440`                             | Token expiration                                        |
-| `QODERCLI_PATH`            | ``                                   | Path to qodercli binary (optional)                      |
+| `JWT_SECRET`               | `qoderroute-super-secret-key...`     | Reserved (JWT auth is not wired yet)                    |
+| `JWT_ALGORITHM`            | `HS256`                              | Reserved                                                |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440`                             | Reserved                                                |
+| `QODERCLI_PATH`            | ``                                   | Legacy; not required — PAT validation runs over HTTP    |
 | `QODER_POLL_INTERVAL`      | `300`                                | Seconds between pool refreshes                          |
 | `ACCOUNT_COOLDOWN_SECONDS` | `30`                                 | Base backoff on consecutive failures                    |
 | `MAX_CONSECUTIVE_FAILURES` | `3`                                  | Max failures before cooldown                            |
