@@ -1,0 +1,279 @@
+import asyncio
+import json
+import logging
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
+import httpx
+
+logger = logging.getLogger("qoderroute.quota")
+
+QODER_BASE = "https://openapi.qoder.sh"
+QODER_UA = "qoder/1.1.17"
+QODER_VERSION = "1.1.17"
+
+EXCHANGE_URL = f"{QODER_BASE}/api/v1/jobToken/exchange"
+PLAN_URL = f"{QODER_BASE}/api/v2/user/plan"
+QUOTA_URL = f"{QODER_BASE}/api/v2/quota/usage"
+
+# Job-token cache: PAT -> (job_token, expires_at_epoch)
+_job_token_cache: dict[str, tuple[str, float]] = {}
+_job_token_locks: dict[str, asyncio.Lock] = {}
+
+
+def _base_headers() -> dict[str, str]:
+    return {
+        "User-Agent": QODER_UA,
+        "Accept": "application/json",
+        "X-Request-ID": str(uuid.uuid4()).upper(),
+        "Cosy-Version": QODER_VERSION,
+        "Cosy-ClientType": "5",
+        "Cosy-MachineOS": "x86_64_linux",
+    }
+
+
+async def _get_job_token(client: httpx.AsyncClient, pat: str) -> Optional[str]:
+    """Exchange pt-* PAT for jt-* job token, cached until near expiry."""
+    if not pat.startswith("pt-"):
+        return pat
+
+    cached = _job_token_cache.get(pat)
+    if cached and cached[1] > time.time() + 60:
+        return cached[0]
+
+    lock = _job_token_locks.setdefault(pat, asyncio.Lock())
+    async with lock:
+        cached = _job_token_cache.get(pat)
+        if cached and cached[1] > time.time() + 60:
+            return cached[0]
+
+        try:
+            resp = await client.post(
+                EXCHANGE_URL,
+                headers={**_base_headers(), "Content-Type": "application/json"},
+                json={"personal_token": pat},
+            )
+            if resp.status_code != 200:
+                logger.warning(f"jobToken exchange HTTP {resp.status_code}")
+                return None
+            data = resp.json()
+            token = data.get("token") or data.get("device_token") or data.get("access_token")
+            expires_in = data.get("expires_in")
+            if not isinstance(token, str) or not token:
+                return None
+            expires_epoch: Optional[float] = None
+            expires_at = data.get("expires_at")
+            if isinstance(expires_at, (int, float)):
+                expires_epoch = float(expires_at)
+                if expires_epoch > 10_000_000_000:  # milliseconds
+                    expires_epoch /= 1000
+            elif isinstance(expires_at, str) and expires_at.strip():
+                try:
+                    parsed = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    expires_epoch = parsed.timestamp()
+                except ValueError:
+                    pass
+            if expires_epoch is None:
+                ttl = float(expires_in) if isinstance(expires_in, (int, float)) else 23 * 3600
+                # The exchange API currently reports 86400000 milliseconds;
+                # treating it as seconds would retain a stale JT for years.
+                if ttl > 7 * 24 * 3600:
+                    ttl /= 1000
+                expires_epoch = time.time() + ttl
+            _job_token_cache[pat] = (token, expires_epoch)
+            return token
+        except Exception as e:
+            logger.warning(f"jobToken exchange error: {e}")
+            return None
+
+
+def _parse_plan(plan: dict) -> dict:
+    return {
+        "plan_tier": str(plan.get("user_type") or ""),
+        "plan_name": str(plan.get("plan_tier_name") or plan.get("plan_tier") or ""),
+        "is_paid": bool(plan.get("is_paid_plan")),
+        "end_date": plan.get("end_date"),
+    }
+
+
+def _parse_quota(quota: dict) -> dict:
+    uq = quota.get("userQuota") if isinstance(quota.get("userQuota"), dict) else {}
+    total = uq.get("total")
+    used = uq.get("used")
+    remaining = uq.get("remaining")
+    percentage = uq.get("percentage", quota.get("totalUsagePercentage"))
+
+    if remaining is None and isinstance(total, (int, float)):
+        remaining = float(total) - (float(used) if isinstance(used, (int, float)) else 0.0)
+
+    return {
+        "quota_total": float(total) if isinstance(total, (int, float)) else None,
+        "quota_used": float(used) if isinstance(used, (int, float)) else None,
+        "quota_remaining": float(remaining) if isinstance(remaining, (int, float)) else None,
+        "quota_percentage": float(percentage) if isinstance(percentage, (int, float)) else None,
+        "is_quota_exceeded": bool(quota.get("isQuotaExceeded")),
+        "quota_unit": str(uq.get("unit") or quota.get("usageType") or "credits"),
+        "expires_at": quota.get("expiresAt"),
+    }
+
+
+async def fetch_plan_quota(pat: str) -> Optional[dict]:
+    """Fetch plan + quota + userinfo for a PAT. Returns merged dict or None on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token = await _get_job_token(client, pat)
+            if not token:
+                return None
+
+            headers = {**_base_headers(), "Authorization": f"Bearer {token}"}
+
+            plan: dict = {}
+            quota: dict = {}
+            userinfo: dict = {}
+
+            try:
+                r = await client.get(PLAN_URL, headers=headers)
+                if r.status_code == 200:
+                    plan = r.json()
+            except Exception as e:
+                logger.warning(f"plan fetch error: {e}")
+
+            try:
+                r = await client.get(QUOTA_URL, headers=headers)
+                if r.status_code == 200:
+                    quota = r.json()
+            except Exception as e:
+                logger.warning(f"quota fetch error: {e}")
+
+            try:
+                r = await client.get(f"{QODER_BASE}/api/v1/userinfo", headers=headers)
+                if r.status_code == 200:
+                    userinfo = r.json()
+            except Exception as e:
+                logger.warning(f"userinfo fetch error: {e}")
+
+            if not plan and not quota and not userinfo:
+                return None
+
+            result = {}
+            if plan:
+                result.update(_parse_plan(plan))
+            if quota:
+                result.update(_parse_quota(quota))
+            if userinfo and userinfo.get("email"):
+                result["email"] = str(userinfo["email"])
+            result["quota_fetched_at"] = time.time()
+            return result
+    except Exception as e:
+        logger.warning(f"fetch_plan_quota error: {e}")
+        return None
+
+
+async def get_job_token(pat: str) -> Optional[str]:
+    async with httpx.AsyncClient(timeout=15) as client:
+        return await _get_job_token(client, pat)
+
+
+_uid_cache: dict[str, str] = {}
+
+
+async def get_uid(pat: str) -> Optional[str]:
+    if pat in _uid_cache:
+        return _uid_cache[pat]
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token = await _get_job_token(client, pat)
+            if not token:
+                return None
+            r = await client.get(
+                f"{QODER_BASE}/api/v1/userinfo",
+                headers={**_base_headers(), "Authorization": f"Bearer {token}"},
+            )
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            uid = data.get("id") or data.get("user_id") or data.get("uid")
+            if isinstance(uid, str) and uid:
+                _uid_cache[pat] = uid
+                return uid
+    except Exception as e:
+        logger.warning(f"get_uid error: {e}")
+    return None
+
+
+def looks_like_quota_error(message: str) -> bool:
+    """Heuristic: does an upstream error message mean quota exhaustion?"""
+    m = (message or "").lower()
+    return any(
+        k in m
+        for k in (
+            "quota",
+            "credits exhausted",
+            "credit_exhausted",
+            "isquotaexceeded",
+            "insufficient credits",
+            "upgrade",
+            "rate limit",
+            "429",
+        )
+    )
+
+
+MODEL_QUEUE_ERROR_CODE = "10605"
+
+
+def looks_like_model_queue(message: str) -> bool:
+    """Heuristic: does an upstream error mean the model is queued (10605)?
+
+    This is a transient server-side queue (isQueued), not an account failure —
+    the account stays healthy and the client should retry.
+    """
+    return MODEL_QUEUE_ERROR_CODE in (message or "")
+
+
+_TRANSIENT_STREAM_MARKERS = (
+    "peer closed connection",
+    "incomplete chunked read",
+    "connection reset",
+    "server disconnected",
+    "connection aborted",
+    "remote end closed connection",
+)
+
+
+def looks_like_transient_stream_error(message: str) -> bool:
+    """Heuristic: a flaky mid-stream connection drop, safe to retry once."""
+    m = (message or "").lower()
+    return any(k in m for k in _TRANSIENT_STREAM_MARKERS)
+
+
+def parse_model_queue(message: str) -> Optional[dict]:
+    """Extract the 10605 queue payload from an upstream error message.
+
+    The message looks like:
+      upstream status 403: {"code":"10605","message":"{...isQueued...}"}
+    Returns the inner dict (isQueued, retryAfterSeconds, ...) or None.
+    """
+    if not message or MODEL_QUEUE_ERROR_CODE not in message:
+        return None
+    try:
+        start = message.index("{")
+        outer = json.loads(message[start:])
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if str(outer.get("code")) != MODEL_QUEUE_ERROR_CODE:
+        return None
+    inner = outer.get("message")
+    if isinstance(inner, dict):
+        return inner
+    if isinstance(inner, str):
+        try:
+            parsed = json.loads(inner)
+            return parsed if isinstance(parsed, dict) else None
+        except (ValueError, json.JSONDecodeError):
+            return None
+    return None

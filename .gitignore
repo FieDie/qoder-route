@@ -1,0 +1,45 @@
+# dependencies
+node_modules/
+package-lock.json
+
+# build output
+dist/
+frontend/dist/
+tsbuildinfo*
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.env
+
+# data & logs
+*.db
+data/
+server.log
+server.pid
+server.lock
+signer.pid
+signer.log
+.start.lock
+
+# local secrets
+credentials.env
+
+# editor configs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# worker (trial activation) - excluded from public build
+backend/app/api/worker.py
+backend/app/services/worker_runner.py
+backend/app/services/worker_pool.py
+frontend/src/components/worker/
