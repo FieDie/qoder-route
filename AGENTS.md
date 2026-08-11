@@ -1,11 +1,11 @@
 # QoderRoute — Documentation for Coding Agents
 
-This document provides structural, operational, and conventions guidance for agents interacting with or modifying QoderRoute. All information must match the actual codebase under `/home/bro/devy/QoderRoute`.
+This document provides structural, operational, and conventions guidance for agents interacting with or modifying QoderRoute. All information must match the actual codebase in this repository.
 
 ## Project Structure Map
 
 ```
-/home/bro/devy/QoderRoute/
+QoderRoute/
 ├── backend/
 │   ├── app/
 │   │   ├── api/                  # FastAPI routers (HTTP endpoints)
