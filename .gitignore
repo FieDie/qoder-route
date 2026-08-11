@@ -5,7 +5,7 @@ package-lock.json
 # build output
 dist/
 frontend/dist/
-tsbuildinfo*
+*.tsbuildinfo
 
 # python
 __pycache__/
