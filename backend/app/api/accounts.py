@@ -237,7 +237,7 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
         if tier == "personal_standard":
             raise HTTPException(
                 status_code=400,
-                detail="Free plan (personal_standard) — this account has no paid plan. Not added.",
+                detail="Free plan (personal_standard) — this account has no plan. Not added.",
             )
 
     account = await pool.add_account(
