@@ -617,9 +617,13 @@ export function Dashboard() {
                 >
                   Traffic
                 </SectionTitle>
-                {activity?.window.requests ? (
+                {!activity?.window.requests ? (
+                  <div className="h-[260px] flex items-center justify-center text-xs text-neutral-500">
+                    No traffic in the last hour
+                  </div>
+                ) : (
                   <TrafficChart series={series} empty={false} />
-                ) : null}
+                )}
               </Card>
             </motion.div>
 
