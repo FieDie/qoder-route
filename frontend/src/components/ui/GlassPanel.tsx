@@ -24,6 +24,23 @@ export function SectionTitle({ icon, children, right }: { icon?: ReactNode; chil
   )
 }
 
+/* ── Header badge — small pill shown in page headers (Live, interval, etc.) ── */
+export function HeaderBadge({ icon, children, pulse }: { icon?: ReactNode; children: ReactNode; pulse?: boolean }) {
+  return (
+    <span
+      className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-medium text-neutral-400"
+      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+    >
+      {pulse ? (
+        <span className="pulse-dot w-1.5 h-1.5 rounded-full" style={{ backgroundColor: '#d4d4d4', color: '#d4d4d4' }} />
+      ) : icon ? (
+        <span className="text-neutral-500 flex items-center">{icon}</span>
+      ) : null}
+      {children}
+    </span>
+  )
+}
+
 /* ── Status badge (monochrome) ── */
 type Status = 'active' | 'error' | 'inactive'
 

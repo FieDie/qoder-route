@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useDashboardStats, usePoolStatus, useActivityStats } from '../../hooks/useApi'
 import { useCountUp } from '../../hooks/useCountUp'
-import { Card, SectionTitle, Skeleton } from '../ui/GlassPanel'
+import { Card, SectionTitle, Skeleton, HeaderBadge } from '../ui/GlassPanel'
 import { timeAgo, formatNumber } from '../../lib/utils'
 import { Users, Zap, Activity, Database, CircleAlert, Gauge, CheckCircle2, Wallet, BarChart3 } from 'lucide-react'
 import {
@@ -544,13 +544,7 @@ export function Dashboard() {
           <h1 className="text-[24px] font-bold text-white tracking-tight">Dashboard</h1>
           <p className="text-sm text-neutral-500 mt-1">Real-time account pool telemetry</p>
         </div>
-        <div
-          className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-medium text-neutral-400"
-          style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}
-        >
-          <span className="pulse-dot w-1.5 h-1.5 rounded-full" style={{ backgroundColor: '#d4d4d4', color: '#d4d4d4' }} />
-          Live
-        </div>
+        <HeaderBadge pulse>Live</HeaderBadge>
       </motion.div>
 
       {isLoading ? (

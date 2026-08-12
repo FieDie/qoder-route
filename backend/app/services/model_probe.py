@@ -59,6 +59,12 @@ async def _probe_attempt(pat: str, display: str, level: str) -> dict:
                 tokens = int(u.get("total_tokens") or u.get("completion_tokens") or 0)
             elif event["type"] == "error":
                 error = event.get("message", "upstream error")
+                # Queue error (10605) arrives as the FIRST event; the stream
+                # then hangs until the connection drops (~67s). Stop reading
+                # immediately so the queue error isn't overwritten by a
+                # "stream interrupted" event from the connection drop.
+                if looks_like_model_queue(error):
+                    break
     except Exception as e:
         error = str(e)[:200]
 

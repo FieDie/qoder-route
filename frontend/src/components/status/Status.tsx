@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { Activity, CircleAlert, Gauge, Timer, Clock3 } from 'lucide-react'
-import { Card, SectionTitle, Skeleton, StatusBadge, EmptyState } from '../ui/GlassPanel'
+import { Card, SectionTitle, Skeleton, StatusBadge, EmptyState, HeaderBadge } from '../ui/GlassPanel'
 import { useModelStatus } from '../../hooks/useApi'
 import { timeAgo } from '../../lib/utils'
 import type { ModelStatus } from '../../types'
@@ -23,7 +23,14 @@ function ModelCard({ m }: { m: ModelStatus }) {
             <div className="font-semibold text-white tracking-tight truncate">{m.display}</div>
             <div className="text-[10px] text-neutral-600 font-mono mt-0.5 truncate">{m.model}</div>
           </div>
-          <StatusBadge status={m.alive ? 'active' : 'error'} />
+          {m.is_queued && !m.alive ? (
+            <span className="chip chip-outline text-amber-400" style={{ borderColor: 'rgba(251,191,36,0.4)' }}>
+              <Clock3 size={11} />
+              Queued
+            </span>
+          ) : (
+            <StatusBadge status={m.alive ? 'active' : 'error'} />
+          )}
         </div>
 
         <div className="mt-4 flex items-end justify-between gap-3">
@@ -82,10 +89,9 @@ export function Status() {
           <h1 className="text-[24px] font-bold text-white tracking-tight">Status</h1>
           <p className="text-sm text-neutral-500 mt-1">Model health probes — a short "Hello!" ping per model</p>
         </div>
-        <div className="chip chip-outline">
-          <Timer size={11} />
+        <HeaderBadge icon={<Timer size={11} />}>
           {data?.enabled ? `every ${data.interval_minutes} min` : 'probing off'}
-        </div>
+        </HeaderBadge>
       </motion.div>
 
       {isLoading ? (
