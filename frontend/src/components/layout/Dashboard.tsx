@@ -617,7 +617,9 @@ export function Dashboard() {
                 >
                   Traffic
                 </SectionTitle>
-                <TrafficChart series={series} empty={(activity?.window.requests ?? 0) === 0} />
+                {activity?.window.requests ? (
+                  <TrafficChart series={series} empty={false} />
+                ) : null}
               </Card>
             </motion.div>
 
