@@ -705,7 +705,19 @@ async def run_infer(
     try:
         client = _get_upstream()
         async with client.stream("POST", url, headers=headers, content=body_bytes) as resp:
-            if resp.status_code != 200:
+            if resp.status_code == 403:
+                # Check for queue error (10605) in the response body
+                text = (await resp.aread()).decode("utf-8", "replace")[:1000]
+                parsed = _try_json(text)
+                if isinstance(parsed, dict):
+                    if str(parsed.get("code")) == "10605":
+                        msg = f"model queued (10605): {text[:500]}"
+                        yield {"type": "error", "status": 403, "message": msg}
+                        return
+                # Any other 403 is an upstream error
+                yield {"type": "error", "status": 403, "message": f"upstream HTTP 403: {text}"}
+                return
+            elif resp.status_code != 200:
                 text = (await resp.aread()).decode("utf-8", "replace")[:500]
                 yield {"type": "error", "status": resp.status_code, "message": f"upstream HTTP {resp.status_code}: {text}"}
                 return

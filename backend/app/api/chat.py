@@ -31,9 +31,12 @@ def classify_chat_error(message: str, error_scope: str | None = None) -> str:
     """Classify an error by the component whose health it represents."""
     normalized = (message or "").strip().casefold()
     normalized_scope = (error_scope or "").strip().casefold()
-    if normalized_scope == "infrastructure" or normalized == "signer unavailable" or normalized.startswith("signer unavailable:"):
+    if normalized_scope == "infrastructure" or normalized.startswith("signer unavailable") or normalized.startswith("signer unavailable:"):
         return "infrastructure"
     if looks_like_model_queue(message):
+        return "model_queue"
+    # Probe-generated queue error from /direct_client: "model queued (10605)"
+    if "model queued" in normalized and "10605" in normalized:
         return "model_queue"
     if looks_like_quota_error(message):
         return "quota"
