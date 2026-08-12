@@ -708,12 +708,42 @@ async def run_infer(
             if resp.status_code == 403:
                 # Check for queue error (10605) in the response body
                 text = (await resp.aread()).decode("utf-8", "replace")[:1000]
-                parsed = _try_json(text)
-                if isinstance(parsed, dict):
-                    if str(parsed.get("code")) == "10605":
-                        msg = f"model queued (10605): {text[:500]}"
-                        yield {"type": "error", "status": 403, "message": msg}
-                        return
+                
+                # Try to parse outer JSON first
+                parsed_outer = _try_json(text)
+                if isinstance(parsed_outer, dict):
+                    detail = parsed_outer.get("detail")
+                    if isinstance(detail, str):
+                        # detail contains: "upstream status 403: {...}" - extract inner JSON
+                        if "upstream status" in detail:
+                            inner_text = detail.replace('upstream status ', '')
+                            try:
+                                parsed_inner = json.loads(inner_text)
+                                if isinstance(parsed_inner, dict) and str(parsed_inner.get("code")) == "10605":
+                                    msg = f"model queued (10605): {inner_text[:500]}"
+                                    yield {"type": "error", "status": 403, "message": msg}
+                                    return
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        # Also try unescaped nested message
+                        if '"message"' in detail and '"isQueued"' in detail:
+                            try:
+                                # Replace escaped quotes temporarily to parse
+                                normalized = detail.replace('\\"', '"')
+                                inner = json.loads(normalized)
+                                if isinstance(inner, dict) and str(inner.get("code")) == "10605":
+                                    msg = f"model queued (10605): {normalized[:500]}"
+                                    yield {"type": "error", "status": 403, "message": msg}
+                                    return
+                            except (ValueError, TypeError):
+                                pass
+                
+                # Fallback: check raw text for 10605 markers
+                if "10605" in text.lower():
+                    yield {"type": "error", "status": 403, "message": f"model queued (10605): {text[:500]}"}
+                    return
+                
                 # Any other 403 is an upstream error
                 yield {"type": "error", "status": 403, "message": f"upstream HTTP 403: {text}"}
                 return
@@ -729,26 +759,37 @@ async def run_infer(
             event_lines: list[str] = []
             stream_terminal = False
             stream_failed = False
-            async for line in resp.aiter_lines():
-                if line:
-                    event_lines.append(line)
-                    continue
+            try:
+                async for line in resp.aiter_lines():
+                    if line:
+                        event_lines.append(line)
+                        continue
 
-                events, saw_done, saw_finish = await _decode_sse_event(event_lines)
-                event_lines = []
-                stream_terminal = stream_terminal or saw_done or saw_finish
-                for event in events:
-                    stream_failed = stream_failed or event.get("type") == "error"
-                    yield event
-                if saw_done:
-                    break
-            else:
-                if event_lines:
                     events, saw_done, saw_finish = await _decode_sse_event(event_lines)
+                    event_lines = []
                     stream_terminal = stream_terminal or saw_done or saw_finish
                     for event in events:
                         stream_failed = stream_failed or event.get("type") == "error"
                         yield event
+                    if saw_done:
+                        break
+                else:
+                    if event_lines:
+                        events, saw_done, saw_finish = await _decode_sse_event(event_lines)
+                        stream_terminal = stream_terminal or saw_done or saw_finish
+                        for event in events:
+                            stream_failed = stream_failed or event.get("type") == "error"
+                            yield event
+            except Exception as e:
+                # Connection dropped mid-stream - report error without waiting full timeout
+                stream_failed = True
+                yield {
+                    "type": "error",
+                    "message": f"stream interrupted: {str(e)[:500]}",
+                    "status": 502,
+                }
+                return
+            
             if stream_failed:
                 return
             if not stream_terminal:
