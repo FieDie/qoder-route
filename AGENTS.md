@@ -11,7 +11,7 @@ QoderRoute/
 │   │   ├── api/                  # FastAPI routers (HTTP endpoints)
 │   │   │   ├── accounts.py       # CRUD, pool status, stats, quota/activity endpoints
 │   │   │   ├── chat.py           # /v1/chat/completions implementation
-│   │   │   ├── models.py         # /v1/models listing
+│   │   │   ├── models.py         # /v1/models + /api/models/catalog
 │   │   │   ├── logs.py           # /api/logs (+ SSE streaming)
 │   │   │   ├── settings.py       # Runtime settings (GET/PUT)
 │   │   │   ├── status.py         # Model health snapshot
@@ -30,6 +30,7 @@ QoderRoute/
 │   │   │   ├── activity_service.py   # Eligibility claim, signed balance for qwen38_800_invoke
 │   │   │   ├── direct_client.py      # Build native request body, run_infer generator (signer→upstream stream)
 │   │   │   ├── logbus.py               # In-memory ring buffer + SSE subscribers
+│   │   │   ├── model_catalog.py         # Canonical model keys, credit factors and capabilities
 │   │   │   ├── model_probe.py          # Periodic TPS probes per model level
 │   │   │   ├── quota_service.py        # Job token exchange, plan/quota/userinfo fetch from openapi.qoder.sh
 │   │   │   ├── settings_service.py     # In-memory cache of DB-backed settings with _DEFAULTS registry
@@ -44,9 +45,10 @@ QoderRoute/
 │   │   ├── qoder_auth_wasm.wasm      # WASM auth module (Qoder CLI 1.1.17 extracted), shipped in-repo
 │   │   ├── signer_server.mjs         # Node.js HTTP server on 127.0.0.1:8123 (WASM glue)
 │   │   └── signer.log/pid/.start.lock (runtime files)
-│   ├── tests/                        # pytest test suite (asyncio)
+│   ├── tests/                        # [gitignored, local only] pytest regression suite
 │   │   ├── conftest.py
 │   │   ├── test_activity_service.py
+│   │   ├── test_model_catalog.py
 │   │   ├── test_runtime_settings.py
 │   │   ├── test_signer_resilience.py
 │   │   └── test_thinking_regression.py
@@ -60,6 +62,7 @@ QoderRoute/
 │   │   │   ├── accounts/AccountManager.tsx     # Accounts tab with available/exhausted views
 │   │   │   ├── layout/AppLayout.tsx            # Sidebar nav + Routes
 │   │   │   ├── logs/Logs.tsx                   # SSE live logs component
+│   │   │   ├── models/Models.tsx               # Catalog, canonical keys and credit multipliers
 │   │   │   ├── settings/Settings.tsx           # Runtime settings form
 │   │   │   ├── status/Status.tsx               # Model probes TPS/status cards
 │   │   │   ├── ui/GlassPanel.tsx               # Shared UI components (Card, Badge, Skeleton)
@@ -82,7 +85,7 @@ QoderRoute/
 │   ├── vite.config.ts                          # Server port 5173, proxy /api & /v1 → localhost:8010
 │   ├── tailwind.config.js
 │   └── postcss.config.js
-├── .gitignore                                    # Excludes node_modules, dist, data/, *.db, *.log, worker/, credentials.env
+├── .gitignore                                    # Excludes builds, data, local tests, optional worker and secrets
 ├── README.md                                     # User-facing documentation
 └── AGENTS.md                                     # This file
 ```
@@ -125,11 +128,13 @@ QoderRoute/
 
 ### Tests
 
+The regression suite is local and gitignored. Run it only when `backend/tests/` exists in the current checkout:
+
 - **Run All Tests:**  
   ```bash
   cd backend && python3 -m pytest tests/
   ```
-  Requires `pytest` and `pytest-asyncio` installed separately (not in `requirements.txt`). The suite uses `@pytest.mark.asyncio` decorators and relies on `conftest.py` for path setup.
+  Requires `pytest` and `pytest-asyncio` installed separately (not in `requirements.txt`). A clean public clone does not contain `backend/tests/`.
 
 ## Conventions
 
@@ -137,6 +142,8 @@ QoderRoute/
 
 - **Business Logic:** Implementation lives in `backend/app/services/`. Key services:
   - `account_pool.py`: Account rotation, quota tracking, success/failure bookkeeping, free-call activity usage for `qmodel_38max`.
+  - `model_catalog.py`: Single source of truth for public model keys, names, credit factors, context windows and Reasoning/Thinking capabilities.
+  - `model_probe.py`: Probes only the canonical keys selected by the `probe_model_keys` runtime setting.
   - `quota_service.py`: PAT validation, job token exchange, plan/quota userinfo fetching.
   - `direct_client.py`: Builds the native Qoder request shape, delegates to signer `/infer`, parses upstream SSE (including encrypted events).
   - `settings_service.py`: Central registry `_DEFAULTS` keyed by setting name; reads/writes DB with in-memory cache for zero-latency reads. New settings must be added here.
@@ -149,6 +156,7 @@ QoderRoute/
   1. Add key with default value to `_DEFAULTS`.
   2. Update `SettingsUpdate` schema in `backend/app/api/settings.py` to accept the field.
   3. Add the property to `AppSettings` type in `frontend/src/types/index.ts`.
+  List-valued settings such as `probe_model_keys` are JSON-serialized in the key/value settings table and must return detached list copies from `snapshot()`.
 
 - **Signer Lifecycle:** The signer is a Node.js server at `127.0.0.1:8123`. It is started exactly once by `signer_service.ensure_signer()` which uses a filesystem lock (`backend/signer/.start.lock`) to avoid duplicate spawns. A background supervisor (`signer_supervisor()`) monitors health and restarts the signer if it exits unexpectedly. Because the signer is detached (`start_new_session=True`), it survives backend process replacement.
 
@@ -168,6 +176,9 @@ QoderRoute/
   - Frontend: `import.meta.glob()` in `lib/features.ts` resolves to `undefined` when absent; `WORKER_ENABLED` and `WorkerPage` become falsy/null.
   - Backend: `try/except ImportError` in `app/main.py` allows startup without these modules. Do not assume their presence in tests or production builds where they are excluded.
 
+- **The Test Suite Is Local and GitIgnored**
+  `backend/tests/` is deliberately excluded from Git. It may exist in the shared development workspace, but a clean clone will not contain it. Do not make production imports depend on tests, and do not claim tests were run unless the directory is actually present.
+
 - **Exhausted Accounts Are Not Polled**  
   The background quota loop (`_quota_refresher`) only refreshes non-exhausted accounts (`is_quota_exceeded == False`). Exhausted accounts remain untouched until manually refreshed via `/api/accounts/{id}/quota/refresh` — which, when credits are back, also restores `is_available`, clears cooldown/failures, and rejoins routing immediately. With `accounts_auto_delete_exhausted` enabled, parking is replaced by deletion (skipped for accounts with an active free-call activity when `accounts_auto_delete_keep_activity` is on).
 
@@ -182,10 +193,19 @@ QoderRoute/
   Any agent implementing similar mutations must invalidate these four query keys to keep the UI consistent.
 
 - **Model Keys vs Display Names**  
-  The public endpoint `/v1/models` returns model objects with `id` set to internal level keys (e.g., `qmodel_38max`). Clients sending requests should pass these exact strings. Friendly names like `"Qwen3.8-Max"` or `"qwer-3.8-max"` are normalized by `resolve_model_level()` but relying on normalization adds fragility—prefer canonical IDs.
+  The public endpoint `/v1/models` returns model objects with `id` set to canonical catalog keys (for example `qmodel_38max`, `cmodel`, `ultimate`). Clients should pass these exact strings. Friendly names such as `"Qwen3.8-Max"` are normalized by `resolve_model_level()`, but canonical IDs are preferred. `qmodel_preview` is a private compatibility key and must not be advertised as Qwen3.8-Max.
+
+- **Model Catalog Is the Single Source of Truth**
+  Add or change public models in `services/model_catalog.py`; do not independently hardcode another public list in routing, API handlers, probes, or the frontend. `QODER_MODEL_DISPLAY`, `/v1/models`, `/api/models/catalog`, `MODEL_KEY_MAP`, account selectors, and probe choices must stay derived from this catalog. Credit factors are base multipliers and can be reduced by promotions or activities.
+
+- **Reasoning and Thinking Are Different Capabilities**
+  `is_reasoning` mirrors Qoder's model classification. `supports_thinking` mirrors the presence of `thinking_config`. Kimi-K3 (`kmodel_latest`) is the important counterexample: `is_reasoning=false`, but thinking is enabled with `low/high/max` effort and defaults to `max`. Kimi-K2.7-Code (`kmodel`) has no thinking config in the current catalog. Never infer thinking support from `is_reasoning` alone.
+
+- **Model Probes Spend Real Credits**
+  `probe_model_keys` controls exactly which routes are probed. The safe default is the previous nine named models; Cantus (`3.2×`) and generic tiers are opt-in. An empty list is valid and probes nothing. Selection changes apply on the next cycle, and stale status results for deselected models are filtered from the API snapshot.
 
 - **Qwen3.8-Max Reasoning Effort Mapping**  
-  For `qmodel_38max`, the supported effort enum value is `xhigh`, not `max`. `direct_client._MAX_REASONING_EFFORT_BY_MODEL` maps this automatically, but any custom request builders must respect it to avoid upstream rejections.
+  For `qmodel_38max`, the strongest supported effort enum is `xhigh`, not `max`. The native-compatible body currently relies on the catalog default and deliberately omits explicit `reasoning_effort` / `enable_thinking` switches for this model because that provider route rejected them. `_MAX_REASONING_EFFORT_BY_MODEL` still represents the effective effort used by diagnostics. Custom request builders must never send `max` for this key.
 
 - **Context Window Parameter Placement**  
   The `context_length` parameter inside the request body sets the reservation; putting the same value in `model_config.context_window` has no effect on the inference path. Use only `parameters.context_length`.
@@ -197,7 +217,7 @@ QoderRoute/
 
 1. **Ingest:** Client POSTs JSON to `POST /v1/chat/completions` with `messages`, optionally `tools`, `reasoning_effort`, `fast`, `context_window`, `max_tokens`. Body validated by `ChatCompletionRequest` schema.
 
-2. **Resolve Model:** `resolve_model_level(request.model)` normalizes input to a canonical level key (e.g., `"qmodel_38max"`). For Qwen3.8-Max special routing rules apply.
+2. **Resolve Model:** `resolve_model_level(request.model)` normalizes input against `model_catalog.py` to a canonical level key (e.g., `"qmodel_38max"`). For Qwen3.8-Max special routing rules apply.
 
 3. **Select Account:** `pool.get_next_account(db, exclude_ids=set(), model_level=key)` executes:
    - If `model_level == "qmodel_38max"`, check exhausted-credit accounts with active `qwen38_800_invoke` campaign first.
@@ -228,7 +248,9 @@ QoderRoute/
 
 ## Testing Conventions
 
-- **Framework:** `pytest` with `pytest.mark.asyncio` for async tests. Tests live in `backend/tests/`.
+- **Availability:** `backend/tests/` is a gitignored local suite. Check that it exists before planning or reporting test work; it is absent from a clean public clone.
+
+- **Framework:** When present, the suite uses `pytest` with `pytest.mark.asyncio` for async tests.
 
 - **Setup:** `conftest.py` ensures the backend root is importable. Services rely on dependency injection patterns; mocks can patch `async_session` or individual service methods.
 
@@ -237,6 +259,7 @@ QoderRoute/
 - **Coverage Examples:**
   - `test_signer_resilience.py`: Tests concurrent ensure-signer locking, recovery loops.
   - `test_runtime_settings.py`: Validates SettingsUpdate schema constraints for known keys.
+  - `test_model_catalog.py`: Verifies catalog metadata, canonical routing identities, API output, and runtime probe selection.
   - `test_activity_service.py`: Covers eligibility checks, claim outcomes, rowcount expectations.
   - `test_thinking_regression.py`: Verifies correct model config (context length, reasoning enums) for specific model levels.
 

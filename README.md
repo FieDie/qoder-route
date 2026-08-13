@@ -1,6 +1,6 @@
 # QoderRoute
 
-QoderRoute is an OpenAI-compatible proxy router for Qoder (qoder.sh). It maintains a pool of Qoder accounts (via PAT tokens), accepts requests formatted for the OpenAI chat API at `/v1/chat/completions` and model listings at `/v1/models`, signs outbound requests through a Node.js WASM sidecar, forwards them to Qoder upstream endpoints (`api1/2/3.qoder.sh`), and automatically rotates between accounts when quota is exhausted. The project includes a React + TypeScript admin panel for monitoring accounts, quotas, model health, activity logs via SSE, and runtime settings.
+QoderRoute is an OpenAI-compatible proxy router for Qoder (qoder.sh). It maintains a pool of Qoder accounts (via PAT tokens), accepts requests formatted for the OpenAI chat API at `/v1/chat/completions` and model listings at `/v1/models`, signs outbound requests through a Node.js WASM sidecar, forwards them to Qoder upstream endpoints (`api1/2/3.qoder.sh`), and automatically rotates between accounts when quota is exhausted. The project includes a React + TypeScript admin panel for monitoring accounts, quotas, the Qoder model catalog and credit multipliers, model health, activity logs via SSE, and runtime settings.
 
 ## Features
 
@@ -19,20 +19,47 @@ QoderRoute is an OpenAI-compatible proxy router for Qoder (qoder.sh). It maintai
 - **Free-Call Activity / Reward Support for Qwen3.8-Max**  
   Accounts can participate in the Qwen3.8-Max activity campaign (`qwen38_800_invoke`). The system checks eligibility, claims activity, fetches signed balances, and uses one free invocation per completion instead of deducting credits when the campaign is active.
 
-- **Model Health Probes with TPS**  
-  Periodic probes measure each exposed model's liveness and tokens-per-second (TPS). Status is shown on the Status page; probes respect the `probe_interval_minutes` setting (or run every minute if disabled).
+- **Model Catalog & Credit Multipliers**
+  The Models page lists all currently mirrored Qoder routes with their canonical key, display name, base credit factor, context capability, vision support, and separate Reasoning/Thinking flags. The same catalog drives request routing, `/v1/models`, `/api/models/catalog`, account model selectors, and health probes.
+
+- **Configurable Model Health Probes with TPS**
+  Periodic probes measure liveness and tokens-per-second (TPS) only for the models selected in **Settings → Models Probe**. Both the interval and model list are persisted. Expensive models such as Cantus and generic tier routes are available but intentionally opt-in because every probe is a real upstream request.
 
 - **Live Logs via SSE**  
   An SSE stream replays recent events then pushes new ones in real time (`GET /api/logs/stream`). Sources include chat completions, account events, provisioning, and activity updates.
 
 - **Runtime Settings**  
-  All configuration values are persisted in the database and editable via `/api/settings`. Options control log visibility, token/email/request display, auto-delete behavior for exhausted accounts, Qoder backend endpoint selection, and probe frequency.
+  All configuration values are persisted in the database and editable via `/api/settings`. Options control log visibility, token/email/request display, auto-delete behavior for exhausted accounts, Qoder backend endpoint selection, probe frequency, and the exact models included in each probe cycle.
 
 - **Auto-Delete Exhausted Accounts Option**  
   When enabled, accounts marked as quota-exceeded are removed from the pool. A secondary option keeps an account if it still has an active free-call activity slot.
 
 - **OpenAI-Compatible API**  
-  The `/v1/chat/completions` endpoint accepts standard OpenAI request fields (messages, tools, reasoning_effort, context_window, max_tokens, etc.) and returns streaming SSE chunks matching the OpenAI response shape. `/v1/models` lists supported model tiers with display names.
+  The `/v1/chat/completions` endpoint accepts standard OpenAI request fields (messages, tools, reasoning_effort, context_window, max_tokens, etc.) and returns streaming SSE chunks matching the OpenAI response shape. `/v1/models` lists canonical model IDs, display names, and Qoder base credit factors.
+
+## Model Catalog
+
+Credit values are base multipliers mirrored from Qoder's catalog, not fixed per-request prices. Promotions and active free-call rewards can reduce the actual charge, including to zero.
+
+`Reasoning` and `Thinking` are deliberately separate below. `Reasoning` is Qoder's model capability flag; `Thinking` means the catalog exposes a thinking mode. For example, Kimi-K3 is not classified as a reasoning model, but it supports thinking with `low`, `high`, and `max` effort.
+
+| Name | Canonical key | Credits | Reasoning | Thinking |
+|------|---------------|---------|-----------|----------|
+| Auto | `auto` | 1.0× | No | No |
+| Ultimate | `ultimate` | 1.6× | Yes | Yes |
+| Performance | `performance` | 1.1× | No | Yes |
+| Efficient | `efficient` | 0.3× | No | No |
+| Lite | `lite` | 0× / free | No | No |
+| Cantus | `cmodel` | 3.2× | Yes | Yes |
+| Qwen3.8-Max | `qmodel_38max` | 0.5× | Yes | Yes |
+| Qwen3.7-Max | `qmodel_latest` | 0.5× | No | Yes |
+| Qwen3.7-Plus | `qmodel` | 0.1× | No | Yes |
+| Kimi-K3 | `kmodel_latest` | 0.8× | No | Yes (`low` / `high` / `max`) |
+| Kimi-K2.7-Code | `kmodel` | 0.3× | No | No |
+| GLM-5.2 | `gm51model` | 0.6× | Yes | Yes |
+| DeepSeek-V4-Pro | `dmodel` | 0.5× | Yes | Yes |
+| DeepSeek-V4-Flash | `dfmodel` | 0.1× | Yes | Yes |
+| MiniMax-M3 | `mmodel` | 0.2× | No | No |
 
 ## Architecture
 
@@ -123,6 +150,8 @@ Vite runs on `http://localhost:5173` and proxies `/api` and `/v1` to `http://loc
 
 ### Tests
 
+`backend/tests/` is a local, gitignored regression suite and is not shipped in the public repository. If that directory is present in your development checkout:
+
 ```bash
 cd backend
 python3 -m pytest tests/
@@ -164,13 +193,14 @@ Settings managed via `/api/settings` (stored in DB):
 - `account_activity_checks_enabled`
 - `qoder_infer_base` (`api1` | `api2` | `api3`)
 - `probe_interval_minutes` (0 = disabled; otherwise 5–60 min steps)
+- `probe_model_keys` (ordered list of canonical model keys; an empty list probes nothing)
 
 ## API Overview
 
 **OpenAI-Compatible Endpoints**
 
 - `POST /v1/chat/completions` — Chat completion (streaming SSE or JSON). Request schema follows `ChatCompletionRequest`. Accepts messages, tools, reasoning_effort, fast mode, context_window, max_tokens.
-- `GET /v1/models` — List supported models with display names.
+- `GET /v1/models` — List supported canonical model IDs with display names and `credit_factor`.
 
 **Admin REST API**
 
@@ -184,6 +214,7 @@ Settings managed via `/api/settings` (stored in DB):
 - `GET /api/accounts/stats/dashboard` — Dashboard statistics.
 - `GET /api/accounts/stats/activity` — Recent traffic aggregated by minute and model.
 - `GET /api/accounts/models/list` — Available model tiers.
+- `GET /api/models/catalog` — Full router catalog with keys, credit factors, context windows, Reasoning/Thinking, and vision capabilities.
 - `GET /api/status/models` — Model health snapshot (TPS, latency, alive/error).
 - `GET /api/logs` — Recent log events.
 - `GET /api/logs/stream` — SSE stream of live logs.
@@ -198,7 +229,7 @@ Settings managed via `/api/settings` (stored in DB):
 
 - **Backend Dev Mode**: Run `python3 run.py` from `backend/`. When `DEBUG=true`, uvicorn reloads on changes. Ensure the signer is running (it starts automatically with the backend via `ensure_signer` in lifespan).
 
-- **Tests**: Located in `backend/tests/`. They use pytest with asyncio support. Command: `cd backend && python3 -m pytest tests/`. See conftest.py for session setup.
+- **Tests**: The local regression suite lives in the gitignored `backend/tests/` directory when available. It uses pytest with asyncio support: `cd backend && python3 -m pytest tests/`. A clean public clone does not contain this directory.
 
 ## License & Notice
 
