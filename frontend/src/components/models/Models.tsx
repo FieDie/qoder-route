@@ -51,7 +51,7 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
           <span className="chip chip-muted"><BrainCircuit size={10} /> Thinking</span>
         )}
         {model.is_vision && (
-          <span className="chip chip-muted"><Eye size={10} /> Vision</span>
+          <span className="chip chip-muted"><Eye size={10} /> Image input</span>
         )}
         <span className="text-[10px] text-neutral-600">{contextLabel(model)}</span>
       </div>
@@ -76,7 +76,7 @@ export function Models() {
       <motion.div variants={rise} className="flex items-end justify-between gap-4">
         <div>
           <h1 className="text-[24px] font-bold text-white tracking-tight">Models</h1>
-          <p className="text-sm text-neutral-500 mt-1">Qoder model keys and base credit multipliers</p>
+          <p className="text-sm text-neutral-500 mt-1">Qoder model keys, route capabilities and base credit multipliers</p>
         </div>
         <HeaderBadge icon={<Layers3 size={11} />}>{data?.length ?? 0} models</HeaderBadge>
       </motion.div>
@@ -103,6 +103,7 @@ export function Models() {
           <p className="mt-3 px-1 text-[11px] leading-relaxed text-neutral-600">
             Credit values are base multipliers from Qoder's catalog. Promotions and active free-call rewards can make the actual charge lower or zero.
             {' '}Reasoning is the catalog model type; Thinking marks optional thinking support on otherwise non-reasoning models such as Kimi-K3.
+            {' '}Image input means that the Qoder route accepts images, regardless of how the upstream model processes them internally.
           </p>
         </motion.div>
       )}

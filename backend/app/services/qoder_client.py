@@ -24,6 +24,12 @@ QODER_MODEL_LEVELS = {
     _model_slug(str(entry["name"])): str(entry["key"])
     for entry in MODEL_CATALOG
 }
+# Keep the unversioned public aliases accepted after display names gain the
+# upstream build suffix.  OpenCode model IDs intentionally remain stable.
+QODER_MODEL_LEVELS.update({
+    "deepseek-v4-pro": "dmodel",
+    "deepseek-v4-flash": "dfmodel",
+})
 # Private compatibility key previously advertised for the preview tier.  It
 # is deliberately absent from the public catalog, but existing clients that
 # send the exact ID must keep reaching it instead of silently falling to auto.

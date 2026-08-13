@@ -22,8 +22,8 @@ MODEL_CATALOG: tuple[dict[str, Any], ...] = (
     {"key": "kmodel_latest", "name": "Kimi-K3", "credit_factor": 0.8, "is_reasoning": False, "is_vision": True, "max_input_tokens": 180_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
     {"key": "kmodel", "name": "Kimi-K2.7-Code", "credit_factor": 0.3, "is_reasoning": False, "is_vision": True, "max_input_tokens": 256_000, "context_windows": [256_000], "probe_default": True, "kind": "model"},
     {"key": "gm51model", "name": "GLM-5.2", "credit_factor": 0.6, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
-    {"key": "dmodel", "name": "DeepSeek-V4-Pro", "credit_factor": 0.5, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
-    {"key": "dfmodel", "name": "DeepSeek-V4-Flash", "credit_factor": 0.1, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
+    {"key": "dmodel", "name": "DeepSeek V4 Pro 0813", "credit_factor": 0.5, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
+    {"key": "dfmodel", "name": "DeepSeek V4 Flash 0731", "credit_factor": 0.1, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
     {"key": "mmodel", "name": "MiniMax-M3", "credit_factor": 0.2, "is_reasoning": False, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
 )
 
