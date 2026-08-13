@@ -7,7 +7,8 @@ import { WORKER_ENABLED, WorkerPage } from '../../lib/features'
 import { Logs } from '../logs/Logs'
 import { Settings } from '../settings/Settings'
 import { Status } from '../status/Status'
-import { LayoutDashboard, Users, TerminalSquare, ScrollText, Settings as SettingsIcon, Activity, Menu, X } from 'lucide-react'
+import { Models } from '../models/Models'
+import { LayoutDashboard, Users, TerminalSquare, ScrollText, Settings as SettingsIcon, Activity, Cpu, Menu, X } from 'lucide-react'
 
 const NAV: { path: string; label: string; icon: React.ReactNode; hint: string }[] = [
   { path: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={16} />, hint: 'Overview' },
@@ -15,6 +16,7 @@ const NAV: { path: string; label: string; icon: React.ReactNode; hint: string }[
   ...(WORKER_ENABLED
     ? [{ path: '/worker', label: 'Worker', icon: <TerminalSquare size={16} />, hint: 'Trials' }]
     : []),
+  { path: '/models', label: 'Models', icon: <Cpu size={16} />, hint: 'Catalog' },
   { path: '/status', label: 'Status', icon: <Activity size={16} />, hint: 'Models' },
   { path: '/logs', label: 'Logs', icon: <ScrollText size={16} />, hint: 'Activity' },
   { path: '/settings', label: 'Settings', icon: <SettingsIcon size={16} />, hint: 'Config' },
@@ -196,6 +198,7 @@ export function AppLayout() {
                     }
                   />
                 )}
+                <Route path="/models" element={<Models />} />
                 <Route path="/status" element={<Status />} />
                 <Route path="/logs" element={<Logs />} />
                 <Route path="/settings" element={<Settings />} />

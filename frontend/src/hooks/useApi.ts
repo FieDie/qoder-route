@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Account, AccountPoolStatus, ActivityStats, AppSettings, DashboardStats, ModelEntry, ModelStatusSnapshot, WorkerStatus } from '../types'
+import type { Account, AccountPoolStatus, ActivityStats, AppSettings, DashboardStats, ModelCatalogEntry, ModelEntry, ModelStatusSnapshot, WorkerStatus } from '../types'
 
 const BASE = ''
 
@@ -67,6 +67,14 @@ export function useAvailableModels() {
   return useQuery<ModelEntry[]>({
     queryKey: ['models'],
     queryFn: () => api('/api/accounts/models/list'),
+    staleTime: 300000,
+  })
+}
+
+export function useModelCatalog() {
+  return useQuery<ModelCatalogEntry[]>({
+    queryKey: ['model-catalog'],
+    queryFn: () => api('/api/models/catalog'),
     staleTime: 300000,
   })
 }
@@ -179,6 +187,7 @@ export function useSettings() {
 export function useUpdateSettings() {
   const qc = useQueryClient()
   return useMutation({
+    scope: { id: 'settings' },
     mutationFn: (data: Partial<AppSettings>) =>
       api<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(data) }),
     onMutate: async (data) => {

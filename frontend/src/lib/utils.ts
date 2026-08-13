@@ -44,6 +44,7 @@ export function planEndInfo(epoch: number | null): { label: string; daysLeft: nu
 
 export function getModelColor(level: string): string {
   const colors: Record<string, string> = {
+    cmodel: '#e879f9',
     qmodel_preview: '#818cf8',
     qmodel_38max: '#818cf8',
     qmodel_latest: '#6366f1',

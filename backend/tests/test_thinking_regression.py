@@ -12,6 +12,7 @@ from starlette.requests import Request
 from app.api import chat
 from app.models.schemas import ChatCompletionRequest
 from app.services import direct_client
+from app.services import model_probe
 from app.services.qoder_client import QODER_MODEL_DISPLAY, resolve_model_level
 
 
@@ -60,7 +61,46 @@ def test_qwen_38_max_uses_canonical_model_key_and_long_context() -> None:
 
 
 def test_qwen_preview_remains_a_distinct_internal_model() -> None:
+    assert resolve_model_level("qmodel_preview") == "qmodel_preview"
+    assert resolve_model_level("qoder/qmodel_preview") == "qmodel_preview"
     assert direct_client.MODEL_KEY_MAP["qmodel_preview"] == "qmodel_preview"
+
+
+def test_cantus_uses_its_own_canonical_model_not_glm() -> None:
+    model_key = resolve_model_level("qoder/Cantus")
+
+    assert model_key == "cmodel"
+    assert model_key != resolve_model_level("GLM-5.2")
+    assert direct_client.MODEL_KEY_MAP[model_key] == "cmodel"
+
+    body = json.loads(
+        direct_client._build_body(
+            messages=[{"role": "user", "content": "hello"}],
+            model_key=model_key,
+            tools=None,
+        )
+    )
+
+    assert body["model_config"] == {
+        "key": "cmodel",
+        "display_name": "Cantus",
+        "model": "",
+        "format": "openai",
+        "is_vl": True,
+        "api_key": "",
+        "url": "",
+        "max_input_tokens": 180_000,
+        "source": "system",
+        "is_reasoning": True,
+    }
+    assert body["chat_context"]["extra"]["modelConfig"] == {
+        "key": "cmodel",
+        "is_reasoning": True,
+    }
+    assert body["parameters"]["context_length"] == 1_000_000
+    assert body["parameters"]["reasoning_effort"] == "max"
+    assert body["parameters"]["enable_thinking"] is True
+    assert ("Cantus", "cmodel") not in model_probe._probe_models()
 
 
 def test_infer_endpoint_setting_overrides_qoder_cli_cache(
@@ -219,10 +259,12 @@ def test_large_context_request_keeps_thinking_enabled() -> None:
 
     assert body["messages"][0]["content"] == long_history
     assert "context_window" not in body["model_config"]
-    assert body["model_config"]["is_reasoning"] is True
+    # Qwen3.7-Max can emit thinking through enable_thinking, but the native
+    # catalog declares the model capability itself as non-reasoning.
+    assert body["model_config"]["is_reasoning"] is False
     assert body["chat_context"]["extra"]["modelConfig"] == {
         "key": "qmodel_latest",
-        "is_reasoning": True,
+        "is_reasoning": False,
     }
     assert body["parameters"]["context_length"] == 1_000_000
     assert body["parameters"]["max_tokens"] == 32_000

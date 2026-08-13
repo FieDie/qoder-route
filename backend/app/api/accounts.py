@@ -14,6 +14,7 @@ from app.models.schemas import (
 from app.models.account import Account
 from app.services.account_pool import pool
 from app.services.qoder_client import validate_pat, QODER_MODEL_DISPLAY
+from app.services.model_catalog import public_model_catalog
 from app.services import logbus
 from app.services import activity_service
 from app.services import quota_service
@@ -27,8 +28,8 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 @router.get("/models/list", response_model=list[dict])
 async def get_available_models():
     return [
-        {"display_name": name, "level_key": key}
-        for name, key in QODER_MODEL_DISPLAY
+        {"display_name": model["name"], "level_key": model["key"]}
+        for model in public_model_catalog()
     ]
 
 

@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Activity, Check, ChevronDown, Network, TerminalSquare, Users } from 'lucide-react'
 import { Card, SectionTitle, Switch, Skeleton, EmptyState } from '../ui/GlassPanel'
-import { useSettings, useUpdateSettings } from '../../hooks/useApi'
+import { useModelCatalog, useSettings, useUpdateSettings } from '../../hooks/useApi'
 import { WORKER_ENABLED } from '../../lib/features'
-import type { AppSettings, QoderInferBase } from '../../types'
+import type { AppSettings, ModelCatalogEntry, QoderInferBase } from '../../types'
 
 const QODER_ROUTES: { value: QoderInferBase; label: string }[] = [
   { value: 'api1', label: 'api1.qoder.sh' },
@@ -118,6 +118,120 @@ function Select<T extends string | number>({ value, options, onChange }: {
   )
 }
 
+function factorLabel(value: number) {
+  if (value === 0) return 'free'
+  return `${value.toFixed(value % 1 === 0 ? 0 : 1)}×`
+}
+
+/* ── Checklist dropdown used by Models Probe ── */
+function ModelMultiSelect({ values, models, onChange }: {
+  values: string[]
+  models: ModelCatalogEntry[]
+  onChange: (values: string[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const selected = new Set(values)
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [])
+
+  const toggle = (key: string) => {
+    const next = new Set(values)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    onChange(models.filter((model) => next.has(model.key)).map((model) => model.key))
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="w-full flex items-center justify-between rounded-lg px-3.5 py-2.5 text-sm transition-all duration-150 focus:outline-none"
+        style={{
+          background: '#0a0a0a',
+          color: '#ededed',
+          border: `1px solid ${open ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.1)'}`,
+          boxShadow: `0 0 0 3px rgba(255,255,255,${open ? 0.05 : 0})`,
+        }}
+      >
+        <span className="font-mono text-[13px]">
+          {values.length === 0 ? 'No models selected' : `${values.length} of ${models.length} models`}
+        </span>
+        <ChevronDown size={14} className={`text-neutral-500 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.98 }}
+            transition={{ duration: 0.12, ease: 'easeOut' }}
+            className="absolute z-30 mt-2 w-full overflow-hidden rounded-lg"
+            style={{
+              background: '#0a0a0a',
+              border: '1px solid rgba(255,255,255,0.1)',
+              boxShadow: '0 16px 40px -8px rgba(0,0,0,0.8)',
+            }}
+          >
+            <div className="flex items-center justify-between px-3.5 py-2" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              <span className="text-[10px] uppercase tracking-[0.1em] text-neutral-600">Models to probe</span>
+              <div className="flex items-center gap-3 text-[11px]">
+                <button type="button" onClick={() => onChange(models.map((model) => model.key))} className="text-neutral-400 hover:text-white transition-colors">All</button>
+                <button type="button" onClick={() => onChange([])} className="text-neutral-500 hover:text-white transition-colors">None</button>
+              </div>
+            </div>
+            <ul role="listbox" aria-multiselectable="true" className="max-h-[360px] overflow-y-auto py-1">
+              {models.map((model) => {
+                const checked = selected.has(model.key)
+                return (
+                  <li key={model.key}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={checked}
+                      onClick={() => toggle(model.key)}
+                      className="w-full flex items-center gap-3 px-3.5 py-2 text-left transition-colors duration-100 hover:bg-white/5"
+                    >
+                      <span
+                        className={`w-4 h-4 rounded flex items-center justify-center shrink-0 ${checked ? 'bg-neutral-100 text-black' : 'text-transparent'}`}
+                        style={!checked ? { border: '1px solid rgba(255,255,255,0.16)' } : undefined}
+                      >
+                        <Check size={11} strokeWidth={3} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className={`block text-[12px] truncate ${checked ? 'text-neutral-100' : 'text-neutral-400'}`}>{model.name}</span>
+                        <span className="block font-mono text-[10px] text-neutral-600 truncate">{model.key}</span>
+                      </span>
+                      <span className="font-mono text-[10px] text-neutral-600 tabular-nums">{factorLabel(model.credit_factor)}</span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
 function SettingRow({ title, hint, checked, onChange }: {
   title: string
   hint: string
@@ -137,6 +251,7 @@ function SettingRow({ title, hint, checked, onChange }: {
 
 export function Settings() {
   const { data, isLoading } = useSettings()
+  const { data: models, isLoading: modelsLoading } = useModelCatalog()
   const update = useUpdateSettings()
 
   const set = (patch: Partial<AppSettings>) => update.mutate(patch)
@@ -173,22 +288,35 @@ export function Settings() {
         )}
       </Card>
 
-      {/* Model probe */}
+      {/* Models probe */}
       <Card className="p-5">
-        <SectionTitle icon={<Activity size={13} className="text-neutral-400" />}>Model probe</SectionTitle>
-        {isLoading ? (
-          <Skeleton className="h-[70px]" />
+        <SectionTitle icon={<Activity size={13} className="text-neutral-400" />}>Models Probe</SectionTitle>
+        {isLoading || modelsLoading ? (
+          <Skeleton className="h-[154px]" />
         ) : (
-          <div>
-            <span className="label">Probe interval</span>
-            <Select
-              value={data?.probe_interval_minutes ?? 15}
-              options={PROBE_OPTIONS}
-              onChange={(v) => set({ probe_interval_minutes: v })}
-            />
-            <span className="block text-[11px] text-neutral-500 mt-2">
-              How often the router pings each model with a short "Hello!" to measure TPS and health. Set to Off to disable.
-            </span>
+          <div className="space-y-4">
+            <div>
+              <span className="label">Probe interval</span>
+              <Select
+                value={data?.probe_interval_minutes ?? 15}
+                options={PROBE_OPTIONS}
+                onChange={(v) => set({ probe_interval_minutes: v })}
+              />
+              <span className="block text-[11px] text-neutral-500 mt-2">
+                How often the router pings the selected models with a short "Hello!" to measure TPS and health.
+              </span>
+            </div>
+            <div className="pt-1">
+              <span className="label">Models</span>
+              <ModelMultiSelect
+                values={data?.probe_model_keys ?? []}
+                models={models ?? []}
+                onChange={(values) => set({ probe_model_keys: values })}
+              />
+              <span className="block text-[11px] text-neutral-500 mt-2">
+                Applied on the next probe cycle. Cantus and tier routes are opt-in because every probe is a real credit-bearing request.
+              </span>
+            </div>
           </div>
         )}
       </Card>

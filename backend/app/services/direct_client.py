@@ -14,6 +14,7 @@ import httpx
 
 from app.services.quota_service import get_job_token, get_uid
 from app.services import settings_service, signer_service
+from app.services.model_catalog import MODEL_CATALOG
 
 logger = logging.getLogger("qoderroute.direct")
 
@@ -59,17 +60,10 @@ def _get_upstream() -> httpx.AsyncClient:
     return _upstream_client
 
 MODEL_KEY_MAP = {
+    **{str(entry["key"]): str(entry["key"]) for entry in MODEL_CATALOG},
+    # Kept for callers that still use the old private preview tier.  It is not
+    # advertised as Qwen3.8-Max and intentionally stays outside the catalog.
     "qmodel_preview": "qmodel_preview",
-    "qmodel_38max": "qmodel_38max",
-    "qmodel_latest": "qmodel_latest",
-    "qmodel": "qmodel",
-    "kmodel_latest": "kmodel_latest",
-    "kmodel": "kmodel",
-    "gm51model": "gm51model",
-    "dmodel": "dmodel",
-    "dfmodel": "dfmodel",
-    "mmodel": "mmodel",
-    "auto": "auto",
 }
 
 
@@ -81,22 +75,30 @@ _FAST_CAPABLE = {"kmodel"}
 # 128K/180K in the Qoder 1.1.17 catalog; the named long-context models accept
 # 1M, except Kimi K2.7 Code which has one fixed 256K window.
 _DEFAULT_CONTEXT_WINDOW = 1_000_000
-_CONTEXT_WINDOW_BY_MODEL = {"auto": 180_000, "kmodel": 256_000}
+_CONTEXT_WINDOW_BY_MODEL = {
+    str(entry["key"]): int(
+        max(entry["context_windows"])
+        if entry["context_windows"]
+        else entry["max_input_tokens"]
+    )
+    for entry in MODEL_CATALOG
+}
 _DEFAULT_MAX_OUTPUT_TOKENS = 32_000
 _SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 # Native Qoder normalizes catalog models before placing them in the request.
 # Most legacy tier keys tolerate the compact form, but the final Qwen3.8
 # route needs its real catalog identity instead of the old preview fallback.
 _MODEL_CONFIG_DETAILS: dict[str, dict[str, Any]] = {
-    "qmodel_38max": {
-        "display_name": "Qwen3.8-Max",
+    str(entry["key"]): {
+        "display_name": str(entry["name"]),
         "model": "",
         "format": "openai",
-        "is_vl": True,
+        "is_vl": bool(entry["is_vision"]),
         "api_key": "",
         "url": "",
-        "max_input_tokens": 180_000,
-    },
+        "max_input_tokens": int(entry["max_input_tokens"]),
+    }
+    for entry in MODEL_CATALOG
 }
 # Qwen3.8-Max calls its strongest catalog effort ``xhigh``.  Sending the
 # generic ``max`` value used by the other models is outside its advertised
@@ -106,14 +108,8 @@ _MAX_REASONING_EFFORT_BY_MODEL = {"qmodel_38max": "xhigh"}
 # reasoning, but the CLI still declares them as non-reasoning models and uses
 # parameters.enable_thinking as a separate best-effort switch.
 _REASONING_CAPABLE_MODELS = {
-    "qmodel_preview",
-    "qmodel_38max",
-    "qmodel_latest",
-    "qmodel",
-    "gm51model",
-    "dmodel",
-    "dfmodel",
-}
+    str(entry["key"]) for entry in MODEL_CATALOG if entry["is_reasoning"]
+} | {"qmodel_preview"}
 
 
 def normalize_session_id(session_id: Optional[str]) -> Optional[str]:

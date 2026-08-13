@@ -7,14 +7,13 @@ stats (no mark_success/mark_failure) — they only measure model health.
 """
 import asyncio
 import logging
-import asyncio
 import time
 from typing import Optional
 
 from app.core.database import async_session
 from app.services import direct_client, logbus, settings_service
 from app.services.account_pool import pool
-from app.services.qoder_client import QODER_MODEL_DISPLAY
+from app.services.model_catalog import MODEL_CATALOG
 from app.services.quota_service import looks_like_transient_stream_error, looks_like_model_queue
 
 logger = logging.getLogger("qoderroute.probe")
@@ -27,19 +26,14 @@ _last_run: Optional[float] = None
 _probing = False
 
 
-# Generic Qoder tier names — the Status tab shows only the named models.
-GENERIC_TIER_NAMES = {"Auto", "Ultimate", "Performance", "Efficient", "Lite", "Cantus"}
-
-
 def _probe_models() -> list[tuple[str, str]]:
-    """Named models only (Kimi-K3, Qwen3.8-Max, ...), deduped by level key."""
-    seen: dict[str, str] = {}
-    for display, level in QODER_MODEL_DISPLAY:
-        if display in GENERIC_TIER_NAMES:
-            continue
-        if level not in seen:
-            seen[level] = display
-    return [(display, level) for level, display in seen.items()]
+    """Models selected in Settings, in stable catalog order."""
+    selected = set(settings_service.get_probe_model_keys())
+    return [
+        (str(entry["name"]), str(entry["key"]))
+        for entry in MODEL_CATALOG
+        if entry["key"] in selected
+    ]
 
 
 async def _probe_attempt(pat: str, display: str, level: str) -> dict:
@@ -105,11 +99,15 @@ async def probe_all() -> None:
         return
     _probing = True
     try:
+        probe_models = _probe_models()
+        if not probe_models:
+            _last_run = time.time()
+            return
         async with async_session() as db:
             account = await pool.get_next_account(db)
         if not account:
             logger.warning("Model probe skipped: no available accounts")
-            for display, level in _probe_models():
+            for display, level in probe_models:
                 _results[level] = {
                     "model": level, "display": display, "alive": False,
                     "is_queued": False,
@@ -119,7 +117,7 @@ async def probe_all() -> None:
             _last_run = time.time()
             return
 
-        for display, level in _probe_models():
+        for display, level in probe_models:
             result = await _probe_one(account.pat_token, display, level)
             _results[level] = result
             logbus.push(
@@ -134,10 +132,14 @@ async def probe_all() -> None:
 
 
 def snapshot() -> dict:
+    selected = set(settings_service.get_probe_model_keys())
     return {
         "enabled": settings_service.get_probe_interval_minutes() > 0,
         "interval_minutes": settings_service.get_probe_interval_minutes(),
         "probing": _probing,
         "last_run": _last_run,
-        "models": sorted(_results.values(), key=lambda m: m["display"]),
+        "models": sorted(
+            (result for key, result in _results.items() if key in selected),
+            key=lambda m: m["display"],
+        ),
     }

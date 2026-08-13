@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.api.settings import SettingsUpdate
 from app.services import direct_client, settings_service
+from app.services.model_catalog import DEFAULT_PROBE_MODEL_KEYS
 
 
 class _FakeSession:
@@ -48,6 +49,13 @@ def test_settings_contract_accepts_only_known_qoder_infer_bases() -> None:
 def test_activity_checks_setting_defaults_on_and_accepts_boolean() -> None:
     assert settings_service._DEFAULTS["account_activity_checks_enabled"] is True
     assert SettingsUpdate(account_activity_checks_enabled=False).account_activity_checks_enabled is False
+
+
+def test_probe_model_keys_contract_accepts_empty_and_model_lists() -> None:
+    assert SettingsUpdate(probe_model_keys=[]).probe_model_keys == []
+    assert SettingsUpdate(
+        probe_model_keys=["qmodel_38max", "cmodel"]
+    ).probe_model_keys == ["qmodel_38max", "cmodel"]
 
 
 def test_infer_route_switch_is_read_without_restart(
@@ -116,3 +124,33 @@ async def test_invalid_persisted_qoder_infer_base_falls_back_to_api3(
 
     assert settings_service.get_qoder_infer_base() == "api3"
     assert settings_service.snapshot()["qoder_infer_base"] == "api3"
+
+
+@pytest.mark.asyncio
+async def test_probe_model_keys_are_deduped_ordered_and_persisted_as_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _FakeSession()
+    monkeypatch.setattr(settings_service, "_cache", dict(settings_service._DEFAULTS))
+    monkeypatch.setattr(
+        settings_service,
+        "async_session",
+        lambda: _FakeSessionContext(session),
+    )
+
+    result = await settings_service.update(
+        {"probe_model_keys": ["cmodel", "qmodel_38max", "cmodel"]}
+    )
+
+    assert result["probe_model_keys"] == ["cmodel", "qmodel_38max"]
+    row = session.rows["probe_model_keys"]
+    assert getattr(row, "value") == '["cmodel","qmodel_38max"]'
+    assert settings_service.get_probe_model_keys() == ["cmodel", "qmodel_38max"]
+
+
+def test_invalid_probe_model_keys_fall_back_to_safe_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_service, "_cache", {"probe_model_keys": ["nope"]})
+
+    assert settings_service.get_probe_model_keys() == list(DEFAULT_PROBE_MODEL_KEYS)

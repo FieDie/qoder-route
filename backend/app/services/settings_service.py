@@ -3,6 +3,7 @@
 Reads are synchronous dict lookups, so hot paths (e.g. the worker log
 reader checking a flag per line) never touch the database.
 """
+import json
 import logging
 from typing import Optional
 
@@ -10,10 +11,15 @@ from sqlalchemy import select
 
 from app.core.database import async_session
 from app.models.app_setting import AppSetting
+from app.services.model_catalog import (
+    DEFAULT_PROBE_MODEL_KEYS,
+    MODEL_KEYS,
+    MODEL_KEYS_IN_ORDER,
+)
 
 logger = logging.getLogger("qoderroute.settings")
 
-SettingValue = bool | str | int
+SettingValue = bool | str | int | list[str]
 
 _QODER_INFER_BASES = frozenset({"api1", "api2", "api3"})
 PROBE_INTERVALS = (0, 5, 10, 15, 20, 25, 30, 60)  # minutes; 0 disables probing
@@ -29,9 +35,13 @@ _DEFAULTS: dict[str, SettingValue] = {
     "account_activity_checks_enabled": True,
     "qoder_infer_base": "api3",
     "probe_interval_minutes": 15,
+    "probe_model_keys": list(DEFAULT_PROBE_MODEL_KEYS),
 }
 
-_cache: dict[str, SettingValue] = dict(_DEFAULTS)
+_cache: dict[str, SettingValue] = {
+    key: list(value) if isinstance(value, list) else value
+    for key, value in _DEFAULTS.items()
+}
 
 
 def _normalize_value(key: str, value: object) -> Optional[SettingValue]:
@@ -55,10 +65,26 @@ def _normalize_value(key: str, value: object) -> Optional[SettingValue]:
         except (TypeError, ValueError):
             return None
         return minutes if minutes in PROBE_INTERVALS else None
+    if key == "probe_model_keys":
+        candidate = value
+        if isinstance(candidate, str):
+            try:
+                candidate = json.loads(candidate)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(candidate, (list, tuple)):
+            return None
+        if not all(isinstance(item, str) and item in MODEL_KEYS for item in candidate):
+            return None
+        selected = set(candidate)
+        # Store in catalog order, deduped.  This keeps API/UI output stable.
+        return [key for key in MODEL_KEYS_IN_ORDER if key in selected]
     return None
 
 
 def _serialize_value(value: SettingValue) -> str:
+    if isinstance(value, list):
+        return json.dumps(value, separators=(",", ":"))
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
@@ -68,7 +94,10 @@ async def load() -> None:
     """Pull persisted values into the cache. Called once at startup."""
     async with async_session() as session:
         rows = (await session.execute(select(AppSetting))).scalars().all()
-    loaded = dict(_DEFAULTS)
+    loaded = {
+        key: list(value) if isinstance(value, list) else value
+        for key, value in _DEFAULTS.items()
+    }
     for row in rows:
         normalized = _normalize_value(row.key, row.value)
         if normalized is not None:
@@ -88,6 +117,14 @@ def get_probe_interval_minutes() -> int:
     return int(normalized if normalized is not None else _DEFAULTS["probe_interval_minutes"])
 
 
+def get_probe_model_keys() -> list[str]:
+    value = _cache.get("probe_model_keys", _DEFAULTS["probe_model_keys"])
+    normalized = _normalize_value("probe_model_keys", value)
+    if isinstance(normalized, list):
+        return list(normalized)
+    return list(DEFAULT_PROBE_MODEL_KEYS)
+
+
 def get_qoder_infer_base() -> str:
     value = _cache.get("qoder_infer_base", _DEFAULTS["qoder_infer_base"])
     normalized = _normalize_value("qoder_infer_base", value)
@@ -95,7 +132,10 @@ def get_qoder_infer_base() -> str:
 
 
 def snapshot() -> dict[str, SettingValue]:
-    return {key: _cache.get(key, default) for key, default in _DEFAULTS.items()}
+    return {
+        key: list(value) if isinstance(value := _cache.get(key, default), list) else value
+        for key, default in _DEFAULTS.items()
+    }
 
 
 async def update(values: dict[str, SettingValue]) -> dict[str, SettingValue]:

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services import settings_service
+from app.services.model_catalog import MODEL_KEYS
 from app.services.settings_service import PROBE_INTERVALS
 
 logger = logging.getLogger("qoderroute.api.settings")
@@ -22,6 +23,7 @@ class SettingsUpdate(BaseModel):
     account_activity_checks_enabled: Optional[bool] = None
     qoder_infer_base: Optional[Literal["api1", "api2", "api3"]] = None
     probe_interval_minutes: Optional[int] = None
+    probe_model_keys: Optional[list[str]] = None
 
 
 @router.get("")
@@ -37,6 +39,13 @@ async def update_settings(body: SettingsUpdate):
             status_code=400,
             detail=f"probe_interval_minutes must be one of {list(PROBE_INTERVALS)}",
         )
+    if "probe_model_keys" in values:
+        unknown = sorted(set(values["probe_model_keys"]) - MODEL_KEYS)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown model key(s): {', '.join(unknown)}",
+            )
     updated = await settings_service.update(values)
 
     # Flipping auto-delete on sweeps the pool right away — every currently

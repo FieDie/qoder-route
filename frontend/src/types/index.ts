@@ -71,6 +71,20 @@ export interface ModelEntry {
   level_key: string
 }
 
+export interface ModelCatalogEntry {
+  key: string
+  name: string
+  credit_factor: number
+  is_reasoning: boolean
+  supports_thinking: boolean
+  thinking_efforts: string[]
+  default_thinking_effort: string | null
+  is_vision: boolean
+  max_input_tokens: number
+  context_windows: number[]
+  kind: 'tier' | 'model'
+}
+
 export interface WorkerStatus {
   running: boolean
   started_at: number | null
@@ -96,6 +110,7 @@ export interface AppSettings {
   account_activity_checks_enabled: boolean
   qoder_infer_base: QoderInferBase
   probe_interval_minutes: number
+  probe_model_keys: string[]
 }
 
 export interface ModelStatus {

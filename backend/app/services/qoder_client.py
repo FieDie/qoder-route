@@ -9,38 +9,25 @@ from typing import AsyncGenerator, Optional
 import httpx
 
 from app.core.config import settings
+from app.services.model_catalog import MODEL_CATALOG
 
 logger = logging.getLogger("qoderroute.qoder")
 
-QODER_MODEL_LEVELS = {
-    "qwen3.8-max":       "qmodel_38max",
-    "qwen3.7-max":       "qmodel_latest",
-    "qwen3.7-plus":      "qmodel",
-    "kimi-k3":            "kmodel_latest",
-    "kimi-k2.7-code":     "kmodel",
-    "glm-5.2":            "gm51model",
-    "deepseek-v4-pro":    "dmodel",
-    "deepseek-v4-flash":  "dfmodel",
-    "minimax-m3":         "mmodel",
-}
+def _model_slug(value: str) -> str:
+    return value.lower().replace(" ", "-").replace("_", "-")
+
 
 QODER_MODEL_DISPLAY = [
-    ("Auto", "auto"),
-    ("Ultimate", "qmodel_preview"),
-    ("Performance", "qmodel_latest"),
-    ("Efficient", "qmodel"),
-    ("Lite", "kmodel"),
-    ("Cantus", "gm51model"),
-    ("Qwen3.8-Max", "qmodel_38max"),
-    ("Qwen3.7-Max", "qmodel_latest"),
-    ("Qwen3.7-Plus", "qmodel"),
-    ("Kimi-K3", "kmodel_latest"),
-    ("Kimi-K2.7-Code", "kmodel"),
-    ("GLM-5.2", "gm51model"),
-    ("DeepSeek-V4-Pro", "dmodel"),
-    ("DeepSeek-V4-Flash", "dfmodel"),
-    ("MiniMax-M3", "mmodel"),
+    (str(entry["name"]), str(entry["key"])) for entry in MODEL_CATALOG
 ]
+QODER_MODEL_LEVELS = {
+    _model_slug(str(entry["name"])): str(entry["key"])
+    for entry in MODEL_CATALOG
+}
+# Private compatibility key previously advertised for the preview tier.  It
+# is deliberately absent from the public catalog, but existing clients that
+# send the exact ID must keep reaching it instead of silently falling to auto.
+_LEGACY_MODEL_LEVELS = frozenset({"qmodel_preview"})
 
 QODER_JOB_TOKEN_EXCHANGE_URL = "https://openapi.qoder.sh/api/v1/jobToken/exchange"
 
@@ -54,7 +41,7 @@ def resolve_model_level(model: str) -> str:
     if "/" in model:
         model = model.rsplit("/", 1)[-1]
     raw_key = model.strip().lower()
-    known_levels = {level for _, level in QODER_MODEL_DISPLAY}
+    known_levels = {level for _, level in QODER_MODEL_DISPLAY} | _LEGACY_MODEL_LEVELS
     if raw_key in known_levels:
         return raw_key
 
