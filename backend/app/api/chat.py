@@ -40,6 +40,12 @@ def classify_chat_error(message: str, error_scope: str | None = None) -> str:
         return "model_queue"
     if looks_like_quota_error(message):
         return "quota"
+    # Session blocked (416) is a transient server-side throttle, not an
+    # account failure — don't penalize the account with mark_failure.
+    if "416" in normalized and "session blocked" in normalized:
+        return "infrastructure"
+    if looks_like_rate_limit(message):
+        return "infrastructure"
     return "account"
 
 

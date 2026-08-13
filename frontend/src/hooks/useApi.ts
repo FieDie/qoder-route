@@ -177,6 +177,27 @@ export function useRunWorker() {
   })
 }
 
+export function useRemoveFromQueue() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (index: number) =>
+      api(`/api/worker/queue/${index}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['worker-status'] })
+    },
+  })
+}
+
+export function useClearQueue() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api(`/api/worker/queue`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['worker-status'] })
+    },
+  })
+}
+
 export function useSettings() {
   return useQuery<AppSettings>({
     queryKey: ['settings'],

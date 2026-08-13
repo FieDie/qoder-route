@@ -85,6 +85,12 @@ export interface ModelCatalogEntry {
   kind: 'tier' | 'model'
 }
 
+export interface WorkerQueueItem {
+  pat_short: string
+  retry_allow: boolean
+  auto_add: boolean
+}
+
 export interface WorkerStatus {
   running: boolean
   started_at: number | null
@@ -95,6 +101,7 @@ export interface WorkerStatus {
   added_account_id: number | null
   pat_short: string | null
   lines: string[]
+  queue: WorkerQueueItem[]
 }
 
 export type QoderInferBase = 'api1' | 'api2' | 'api3'
