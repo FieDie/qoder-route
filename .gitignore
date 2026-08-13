@@ -43,3 +43,6 @@ backend/app/api/worker.py
 backend/app/services/worker_runner.py
 backend/app/services/worker_pool.py
 frontend/src/components/worker/
+
+# local test suite
+backend/tests/
