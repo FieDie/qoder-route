@@ -202,7 +202,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   `is_reasoning` mirrors Qoder's model classification. `supports_thinking` mirrors the presence of `thinking_config`. Kimi-K3 (`kmodel_latest`) is the important counterexample: `is_reasoning=false`, but thinking is enabled with `low/high/max` effort and defaults to `max`. Kimi-K2.7-Code (`kmodel`) has no thinking config in the current catalog. Never infer thinking support from `is_reasoning` alone.
 
 - **Model Probes Spend Real Credits**
-  `probe_model_keys` controls exactly which routes are probed. The safe default is the previous nine named models; Cantus (`3.2×`) and generic tiers are opt-in. An empty list is valid and probes nothing. Selection changes apply on the next cycle, and stale status results for deselected models are filtered from the API snapshot.
+  `probe_model_keys` controls exactly which routes are probed. The safe default is the ten named models, including GLM-5.3 (`gmodel`); Cantus (`3.2×`) and generic tiers are opt-in. An empty list is valid and probes nothing. Selection changes apply on the next cycle, and stale status results for deselected models are filtered from the API snapshot.
 
 - **Qwen3.8-Max Reasoning Effort Mapping**  
   For `qmodel_38max`, the strongest supported effort enum is `xhigh`, not `max`. The native-compatible body currently relies on the catalog default and deliberately omits explicit `reasoning_effort` / `enable_thinking` switches for this model because that provider route rejected them. `_MAX_REASONING_EFFORT_BY_MODEL` still represents the effective effort used by diagnostics. Custom request builders must never send `max` for this key.

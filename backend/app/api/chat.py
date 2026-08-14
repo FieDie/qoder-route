@@ -38,7 +38,7 @@ def classify_chat_error(message: str, error_scope: str | None = None) -> str:
     # Probe-generated queue error from /direct_client: "model queued (10605)"
     if "model queued" in normalized and "10605" in normalized:
         return "model_queue"
-    if looks_like_quota_error(message):
+    if normalized_scope == "quota" or looks_like_quota_error(message):
         return "quota"
     # Session blocked (416) is a transient server-side throttle, not an
     # account failure — don't penalize the account with mark_failure.

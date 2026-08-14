@@ -12,7 +12,7 @@ from typing import Any, AsyncGenerator, Optional
 
 import httpx
 
-from app.services.quota_service import get_job_token, get_uid
+from app.services.quota_service import get_job_token, get_uid, looks_like_quota_error
 from app.services import settings_service, signer_service
 from app.services.model_catalog import MODEL_CATALOG
 
@@ -639,19 +639,26 @@ async def run_infer(
                         decoded_error = decoded_inner.get("error")
                         if isinstance(decoded_error, dict):
                             wrapper_message = decoded_error.get("message") or wrapper_message
+                    if not wrapper_message:
+                        wrapper_message = inner
                 elif isinstance(inner, dict):
                     wrapper_message = inner.get("message") or wrapper_message
                     inner_error = inner.get("error")
                     if isinstance(inner_error, dict):
                         wrapper_message = inner_error.get("message") or wrapper_message
-                events.append({
+                    if not wrapper_message:
+                        wrapper_message = json.dumps(inner, separators=(",", ":"))
+                error_event = {
                     "type": "error",
                     "status": int(wrapper_status),
                     "message": (
                         f"upstream status {int(wrapper_status)}"
                         + (f": {wrapper_message}" if wrapper_message else "")
                     )[:512],
-                })
+                }
+                if looks_like_quota_error(error_event["message"]):
+                    error_event["error_scope"] = "quota"
+                events.append(error_event)
                 continue
 
             if isinstance(inner, str):
@@ -741,7 +748,11 @@ async def run_infer(
                     return
                 
                 # Any other 403 is an upstream error
-                yield {"type": "error", "status": 403, "message": f"upstream HTTP 403: {text}"}
+                message = f"upstream HTTP 403: {text}"
+                event = {"type": "error", "status": 403, "message": message}
+                if looks_like_quota_error(message):
+                    event["error_scope"] = "quota"
+                yield event
                 return
             elif resp.status_code != 200:
                 text = (await resp.aread()).decode("utf-8", "replace")[:500]

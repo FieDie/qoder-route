@@ -239,7 +239,7 @@ def looks_like_quota_error(message: str) -> bool:
     (or auto-deletes) a perfectly healthy account.
     """
     m = (message or "").lower()
-    return any(
+    if any(
         k in m
         for k in (
             "quota",
@@ -247,6 +247,20 @@ def looks_like_quota_error(message: str) -> bool:
             "credit_exhausted",
             "isquotaexceeded",
             "insufficient credits",
+        )
+    ):
+        return True
+
+    # Qoder's inference gateway also reports an exhausted/unentitled plan as
+    # a 403 whose only payload is a redirect to its pricing page, e.g.
+    # {"pricingUrl":"https://qoder.com/pricing?client=qoder"}.  There is no
+    # literal "quota" marker in that response, but it has the same routing
+    # semantics: park/delete this account and try the next one.
+    return (
+        "qoder.com/pricing?client=qoder" in m
+        or (
+            "403" in m
+            and ("pricingurl" in m or "pricing_url" in m)
         )
     )
 

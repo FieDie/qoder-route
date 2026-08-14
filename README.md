@@ -56,6 +56,7 @@ Credit values are base multipliers mirrored from Qoder's catalog, not fixed per-
 | Qwen3.7-Plus | `qmodel` | 0.1× | No | Yes |
 | Kimi-K3 | `kmodel_latest` | 0.8× | No | Yes (`low` / `high` / `max`) |
 | Kimi-K2.7-Code | `kmodel` | 0.3× | No | No |
+| GLM-5.3 | `gmodel` | 0.6× | Yes | Yes (`low` / `high` / `max`) |
 | GLM-5.2 | `gm51model` | 0.6× | Yes | Yes |
 | DeepSeek V4 Pro 0813 | `dmodel` | 0.5× | Yes | Yes |
 | DeepSeek V4 Flash 0731 | `dfmodel` | 0.1× | Yes | Yes |

@@ -51,6 +51,7 @@ export function getModelColor(level: string): string {
     qmodel: '#4f46e5',
     kmodel_latest: '#2dd4bf',
     kmodel: '#14b8a6',
+    gmodel: '#fbbf24',
     gm51model: '#f59e0b',
     dmodel: '#ef4444',
     dfmodel: '#f97316',
