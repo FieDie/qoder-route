@@ -101,7 +101,7 @@ export function Models() {
             {data.map((model) => <ModelRow key={model.key} model={model} />)}
           </Card>
           <p className="mt-3 px-1 text-[11px] leading-relaxed text-neutral-600">
-            Credit values are base multipliers from Qoder's catalog. Promotions and active free-call rewards can make the actual charge lower or zero.
+            Credit values are base multipliers from Qoder's catalog; actual upstream billing may vary.
             {' '}Reasoning is the catalog model type; Thinking marks optional thinking support on otherwise non-reasoning models such as Kimi-K3.
             {' '}Vision means that the Qoder route accepts image input, regardless of how the upstream model processes it internally.
           </p>

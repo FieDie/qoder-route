@@ -34,23 +34,6 @@ class Account(Base):
 
     email = Column(String(128), nullable=True)
 
-    # Qoder activity identity/state. Machine credentials are deliberately not
-    # exposed by AccountOut; they are only used by the local signer for the
-    # signed activity-balance endpoint.
-    machine_id = Column(String(128), nullable=True)
-    machine_token = Column(Text, nullable=True)
-    machine_type = Column(String(32), nullable=True)
-    activity_id = Column(String(128), nullable=True)
-    activity_status = Column(String(32), nullable=True)
-    activity_label = Column(String(256), nullable=True)
-    activity_model = Column(String(64), nullable=True)
-    activity_limit = Column(Integer, nullable=True)
-    activity_used = Column(Integer, default=0, nullable=False)
-    activity_remaining = Column(Integer, nullable=True)
-    activity_expires_at = Column(Float, nullable=True)
-    activity_checked_at = Column(Float, nullable=True)
-    activity_claimed_at = Column(Float, nullable=True)
-
     quota_total = Column(Float, nullable=True)
     quota_used = Column(Float, nullable=True)
     quota_remaining = Column(Float, nullable=True)

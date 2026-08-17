@@ -1,10 +1,10 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { usePoolStatus, useAddAccount, useDeleteAccount, useUpdateAccount, useRefreshQuota, useClaimActivity, fetchAccountPat, useSettings, useAvailableAccounts, useExhaustedAccounts } from '../../hooks/useApi'
+import { usePoolStatus, useAddAccount, useDeleteAccount, useUpdateAccount, useRefreshQuota, fetchAccountPat, useSettings, useAvailableAccounts, useExhaustedAccounts } from '../../hooks/useApi'
 import { StatusBadge, Card, Modal, Skeleton, EmptyState } from '../ui/GlassPanel'
 import { timeAgo, planEndInfo } from '../../lib/utils'
-import { Plus, Trash2, Power, PowerOff, KeyRound, Activity, ArrowUpRight, RefreshCw, Crown, Copy, Check, Wallet, WalletMinimal, CalendarClock, Gift, Sparkles } from 'lucide-react'
+import { Plus, Trash2, Power, PowerOff, KeyRound, Activity, ArrowUpRight, RefreshCw, Crown, Copy, Check, Wallet, WalletMinimal, CalendarClock } from 'lucide-react'
 import type { Account } from '../../types'
 
 const stagger = {
@@ -126,70 +126,12 @@ function CopyPatButton({ accountId }: { accountId: number }) {
   )
 }
 
-function AccountActivity({ acc, onClaim, claiming }: {
-  acc: Account
-  onClaim: () => void
-  claiming: boolean
-}) {
-  if (!acc.activity_id || !acc.activity_status) return null
-
-  const limit = acc.activity_limit ?? 800
-  const remaining = acc.activity_remaining ?? Math.max(0, limit - (acc.activity_used ?? 0))
-  const used = Math.max(0, limit - remaining)
-  const pct = limit > 0 ? Math.min(used / limit, 1) : 0
-  const expiry = acc.activity_expires_at
-    ? new Date(acc.activity_expires_at).toLocaleDateString()
-    : null
-
-  if (acc.activity_status === 'claimable') {
-    return (
-      <div className="mt-3 rounded-lg px-3 py-3 flex items-center gap-3 border border-white/10 bg-white/[0.035]">
-        <Gift size={16} className="text-neutral-300 shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[12px] font-medium text-neutral-100">Qwen 3.8 Max reward</div>
-          <div className="text-[10px] text-neutral-500 mt-0.5 truncate">
-            {acc.activity_label || '800 free Qwen3.8-Max requests'}
-          </div>
-        </div>
-        <button className="btn-primary px-3 py-1.5 text-[11px]" onClick={onClaim} disabled={claiming}>
-          {claiming ? <RefreshCw size={12} className="animate-spin" /> : <Sparkles size={12} />}
-          {claiming ? 'Claiming' : 'Claim'}
-        </button>
-      </div>
-    )
-  }
-
-  const exhausted = acc.activity_status === 'exhausted' || remaining <= 0
-  return (
-    <div className="mt-3 rounded-lg px-3 py-3 border border-white/10 bg-white/[0.025]">
-      <div className="flex items-center justify-between gap-3 text-[11px]">
-        <span className="flex items-center gap-1.5 text-neutral-300 font-medium">
-          <Sparkles size={12} />
-          {exhausted ? 'Qwen activity exhausted' : 'Qwen activity active'}
-        </span>
-        <span className="text-neutral-500 tabular-nums">
-          {exhausted ? 'credit billing active' : `${remaining.toLocaleString()} free calls left`}
-        </span>
-      </div>
-      <div className="mt-2 h-[4px] rounded-full overflow-hidden bg-white/[0.07]">
-        <div className="h-full rounded-full bg-neutral-300 transition-[width] duration-500" style={{ width: `${pct * 100}%` }} />
-      </div>
-      <div className="mt-1.5 flex justify-between text-[9px] text-neutral-600 tabular-nums">
-        <span>{used.toLocaleString()} used locally</span>
-        <span>{limit.toLocaleString()} total{expiry ? ` · until ${expiry}` : ''}</span>
-      </div>
-    </div>
-  )
-}
-
-function AccountCard({ acc, onToggle, onDelete, onRefreshQuota, onClaimActivity, quotaRefreshing, activityClaiming, showEmail, showTokens, showRequests }: {
+function AccountCard({ acc, onToggle, onDelete, onRefreshQuota, quotaRefreshing, showEmail, showTokens, showRequests }: {
   acc: Account
   onToggle: () => void
   onDelete: () => void
   onRefreshQuota: () => void
-  onClaimActivity: () => void
   quotaRefreshing: boolean
-  activityClaiming: boolean
   showEmail: boolean
   showTokens: boolean
   showRequests: boolean
@@ -243,8 +185,6 @@ function AccountCard({ acc, onToggle, onDelete, onRefreshQuota, onClaimActivity,
         <div className="mt-4">
           <QuotaBar acc={acc} />
         </div>
-        <AccountActivity acc={acc} onClaim={onClaimActivity} claiming={activityClaiming} />
-
         <div
           className="mt-3 pt-3 flex items-center gap-5 text-[11px] text-neutral-500"
           style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
@@ -288,7 +228,6 @@ export function AccountManager() {
   const deleteAccount = useDeleteAccount()
   const updateAccount = useUpdateAccount()
   const refreshQuota = useRefreshQuota()
-  const claimActivity = useClaimActivity()
   
   // Use dedicated endpoints for filtered views
   const { data: availableData, isLoading: loadingAvailable } = useAvailableAccounts()
@@ -461,14 +400,12 @@ export function AccountManager() {
                 key={acc.id}
                 acc={acc}
                 quotaRefreshing={quotaRefreshingId === acc.id}
-                activityClaiming={claimActivity.isPending && claimActivity.variables === acc.id}
                 showEmail={appSettings?.accounts_show_email ?? true}
                 showTokens={appSettings?.accounts_show_tokens ?? true}
                 showRequests={appSettings?.accounts_show_requests ?? true}
                 onToggle={() => updateAccount.mutate({ id: acc.id, is_active: !acc.is_active })}
                 onDelete={() => deleteAccount.mutate(acc.id)}
                 onRefreshQuota={() => handleRefreshQuota(acc.id)}
-                onClaimActivity={() => claimActivity.mutate(acc.id)}
               />
             ))}
           </AnimatePresence>

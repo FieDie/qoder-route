@@ -354,12 +354,6 @@ export function Settings() {
         ) : (
           <div className="space-y-4">
             <SettingRow
-              title="Account activities"
-              hint="Check Qoder campaigns when accounts are added and show claimable rewards on their cards."
-              checked={data?.account_activity_checks_enabled ?? true}
-              onChange={(v) => set({ account_activity_checks_enabled: v })}
-            />
-            <SettingRow
               title="Account email"
               hint="Show the account's email address under its name."
               checked={data?.accounts_show_email ?? true}
@@ -385,16 +379,6 @@ export function Settings() {
                 onChange={(v) => set({ accounts_auto_delete_exhausted: v })}
               />
             </div>
-            {(data?.accounts_auto_delete_exhausted ?? false) && (
-              <div className="pl-9">
-                <SettingRow
-                  title="Keep accounts with active reward"
-                  hint="Skip auto-delete for accounts that still have an unclaimed free-call activity (reward) running."
-                  checked={data?.accounts_auto_delete_keep_activity ?? true}
-                  onChange={(v) => set({ accounts_auto_delete_keep_activity: v })}
-                />
-              </div>
-            )}
           </div>
         )}
       </Card>

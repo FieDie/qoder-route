@@ -19,16 +19,6 @@ export interface Account {
   plan_end_date: number | null
   quota_expires_at: number | null
   email: string | null
-  activity_id: string | null
-  activity_status: 'claimable' | 'active' | 'exhausted' | null
-  activity_label: string | null
-  activity_model: string | null
-  activity_limit: number | null
-  activity_used: number
-  activity_remaining: number | null
-  activity_expires_at: number | null
-  activity_checked_at: number | null
-  activity_claimed_at: number | null
   quota_total: number | null
   quota_used: number | null
   quota_remaining: number | null
@@ -113,8 +103,6 @@ export interface AppSettings {
   accounts_show_tokens: boolean
   accounts_show_requests: boolean
   accounts_auto_delete_exhausted: boolean
-  accounts_auto_delete_keep_activity: boolean
-  account_activity_checks_enabled: boolean
   qoder_infer_base: QoderInferBase
   probe_interval_minutes: number
   probe_model_keys: string[]

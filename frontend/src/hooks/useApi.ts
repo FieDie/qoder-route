@@ -140,19 +140,6 @@ export function useRefreshQuota() {
   })
 }
 
-export function useClaimActivity() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: number) =>
-      api<Account>(`/api/accounts/${id}/activity/claim`, { method: 'POST' }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['pool-status'] })
-      qc.invalidateQueries({ queryKey: ['accounts', 'available'] })
-      qc.invalidateQueries({ queryKey: ['accounts', 'exhausted'] })
-    },
-  })
-}
-
 export async function fetchAccountPat(id: number): Promise<string> {
   const data = await api<{ pat: string }>(`/api/accounts/${id}/pat`)
   return data.pat

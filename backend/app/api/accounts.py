@@ -16,7 +16,6 @@ from app.services.account_pool import pool
 from app.services.qoder_client import validate_pat, QODER_MODEL_DISPLAY
 from app.services.model_catalog import public_model_catalog
 from app.services import logbus
-from app.services import activity_service
 from app.services import quota_service
 
 logger = logging.getLogger("qoderroute.api.accounts")
@@ -43,22 +42,6 @@ async def refresh_pool():
 async def refresh_all_quotas():
     count = await pool.refresh_all_quotas()
     return {"ok": True, "refreshed": count}
-
-
-@router.post("/activity/refresh-all")
-async def refresh_all_activities(db: AsyncSession = Depends(get_db)):
-    ids = list((await db.execute(select(Account.id).where(Account.is_active == True))).scalars())
-    refreshed = 0
-    for account_id in ids:
-        account = await pool.get_account_by_id(db, account_id)
-        if account and account.email and not account.machine_token:
-            await activity_service.attach_machine_identity_from_attempt(
-                account_id,
-                email=account.email,
-            )
-        if await activity_service.refresh_account_activity(account_id, force=True):
-            refreshed += 1
-    return {"ok": True, "refreshed": refreshed}
 
 
 @router.get("/stats/activity")
@@ -249,13 +232,6 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
         default_model=body.default_model,
     )
     await pool.refresh_quota(account.id)
-    refreshed = await pool.get_account_by_id(db, account.id)
-    if refreshed and refreshed.email:
-        await activity_service.attach_machine_identity_from_attempt(
-            account.id,
-            email=refreshed.email,
-        )
-    await activity_service.refresh_account_activity(account.id)
     acc = await pool.get_account_by_id(db, account.id)
     return AccountOut.model_validate(acc or account)
 
@@ -299,28 +275,6 @@ async def refresh_account_quota(account_id: int):
     if data is None:
         raise HTTPException(status_code=404, detail="Account not found or quota fetch failed")
     return {"ok": True, "quota": data}
-
-
-@router.post("/{account_id}/activity/refresh", response_model=AccountOut)
-async def refresh_account_activity(account_id: int):
-    account = await activity_service.refresh_account_activity(account_id, force=True)
-    if account is None:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return AccountOut.model_validate(account)
-
-
-@router.post("/{account_id}/activity/claim", response_model=AccountOut)
-async def claim_account_activity(account_id: int):
-    try:
-        return AccountOut.model_validate(
-            await activity_service.claim_account_activity(account_id)
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/{account_id}/pat")

@@ -1,11 +1,11 @@
 # QoderRoute
 
-QoderRoute is an OpenAI-compatible proxy router for Qoder (qoder.sh). It maintains a pool of Qoder accounts (via PAT tokens), accepts requests formatted for the OpenAI chat API at `/v1/chat/completions` and model listings at `/v1/models`, signs outbound requests through a Node.js WASM sidecar, forwards them to Qoder upstream endpoints (`api1/2/3.qoder.sh`), and automatically rotates between accounts when quota is exhausted. The project includes a React + TypeScript admin panel for monitoring accounts, quotas, the Qoder model catalog and credit multipliers, model health, activity logs via SSE, and runtime settings.
+QoderRoute is an OpenAI-compatible proxy router for Qoder (qoder.sh). It maintains a pool of Qoder accounts (via PAT tokens), accepts requests formatted for the OpenAI chat API at `/v1/chat/completions` and model listings at `/v1/models`, signs outbound requests through a Node.js WASM sidecar, forwards them to Qoder upstream endpoints (`api1/2/3.qoder.sh`), and automatically rotates between accounts when quota is exhausted. The project includes a React + TypeScript admin panel for monitoring accounts, quotas, the Qoder model catalog and credit multipliers, model health, live request logs via SSE, and runtime settings.
 
 ## Features
 
 - **Account Pool with Fill‑First Rotation**  
-  Accounts are ordered by priority (descending) then ID (ascending). The first available account with remaining quota serves until it exhausts, then the next in line takes over. For Qwen3.8-Max (`qmodel_38max`), accounts whose credit quota is exhausted but that have an active free-call campaign are prioritized.
+  Accounts are ordered by priority (descending) then ID (ascending). The first available account with remaining quota serves until it exhausts, then the next in line takes over.
 
 - **Quota Tracking & Plan Metadata**  
   Every account's plan tier, name, end date, and quota usage are fetched from `openapi.qoder.sh`. The background loop refreshes this every 5 minutes. Account cards display plan type, paid/free status, plan end date, and quota progress. When an account hits quota, it is parked and will automatically rejoin rotation once credits renew. Paid plan names are derived from the quota size, since the plan endpoint does not distinguish tiers: 2,000 credits → Pro Plan, 6,000 → Pro+ Plan, 20,000 → Ultra Plan (trials keep their API-reported name, e.g. Pro Trial with 300 credits).
@@ -16,9 +16,6 @@ QoderRoute is an OpenAI-compatible proxy router for Qoder (qoder.sh). It maintai
 - **Rate-Limit vs Quota Distinction**  
   Transient 429 / rate-limit responses never park or delete an account — only genuine quota-exhaustion signals do (quota / credits-exhausted markers). Rate-limited accounts get the normal failure cooldown and recover automatically.
 
-- **Free-Call Activity / Reward Support for Qwen3.8-Max**  
-  Accounts can participate in the Qwen3.8-Max activity campaign (`qwen38_800_invoke`). The system checks eligibility, claims activity, fetches signed balances, and uses one free invocation per completion instead of deducting credits when the campaign is active.
-
 - **Model Catalog & Credit Multipliers**
   The Models page lists all currently mirrored Qoder routes with their canonical key, display name, base credit factor, context capability, vision support, and separate Reasoning/Thinking flags. The same catalog drives request routing, `/v1/models`, `/api/models/catalog`, account model selectors, and health probes.
 
@@ -26,20 +23,20 @@ QoderRoute is an OpenAI-compatible proxy router for Qoder (qoder.sh). It maintai
   Periodic probes measure liveness and tokens-per-second (TPS) only for the models selected in **Settings → Models Probe**. Both the interval and model list are persisted. Expensive models such as Cantus and generic tier routes are available but intentionally opt-in because every probe is a real upstream request.
 
 - **Live Logs via SSE**  
-  An SSE stream replays recent events then pushes new ones in real time (`GET /api/logs/stream`). Sources include chat completions, account events, provisioning, and activity updates.
+  An SSE stream replays recent events then pushes new ones in real time (`GET /api/logs/stream`). Sources include chat completions, account events, provisioning, and routing updates.
 
 - **Runtime Settings**  
   All configuration values are persisted in the database and editable via `/api/settings`. Options control log visibility, token/email/request display, auto-delete behavior for exhausted accounts, Qoder backend endpoint selection, probe frequency, and the exact models included in each probe cycle.
 
 - **Auto-Delete Exhausted Accounts Option**  
-  When enabled, accounts marked as quota-exceeded are removed from the pool. A secondary option keeps an account if it still has an active free-call activity slot.
+  When enabled, accounts marked as quota-exceeded are removed from the pool.
 
 - **OpenAI-Compatible API**  
   The `/v1/chat/completions` endpoint accepts standard OpenAI request fields (messages, tools, reasoning_effort, context_window, max_tokens, etc.) and returns streaming SSE chunks matching the OpenAI response shape. `/v1/models` lists canonical model IDs, display names, and Qoder base credit factors.
 
 ## Model Catalog
 
-Credit values are base multipliers mirrored from Qoder's catalog, not fixed per-request prices. Promotions and active free-call rewards can reduce the actual charge, including to zero.
+Credit values are base multipliers mirrored from Qoder's catalog, not fixed per-request prices. Actual upstream billing can vary.
 
 `Reasoning` and `Thinking` are deliberately separate below. `Reasoning` is Qoder's model capability flag; `Thinking` means the catalog exposes a thinking mode. For example, Kimi-K3 is not classified as a reasoning model, but it supports thinking with `low`, `high`, and `max` effort.
 
@@ -190,8 +187,7 @@ Settings managed via `/api/settings` (stored in DB):
 
 - `worker_logs_enabled`, `worker_retry_allow`
 - `accounts_show_email`, `accounts_show_tokens`, `accounts_show_requests`
-- `accounts_auto_delete_exhausted`, `accounts_auto_delete_keep_activity`
-- `account_activity_checks_enabled`
+- `accounts_auto_delete_exhausted`
 - `qoder_infer_base` (`api1` | `api2` | `api3`)
 - `probe_interval_minutes` (0 = disabled; otherwise 5–60 min steps)
 - `probe_model_keys` (ordered list of canonical model keys; an empty list probes nothing)
@@ -211,7 +207,6 @@ Settings managed via `/api/settings` (stored in DB):
 - `DELETE /api/accounts/{id}` — Delete account.
 - `POST /api/accounts/{id}/quota/refresh` — Refresh quota for one account.
 - `POST /api/accounts/quota/refresh-all` — Refresh all active accounts' quotas.
-- `POST /api/accounts/activity/refresh-all` — Refresh activity balance for all active accounts.
 - `GET /api/accounts/stats/dashboard` — Dashboard statistics.
 - `GET /api/accounts/stats/activity` — Recent traffic aggregated by minute and model.
 - `GET /api/accounts/models/list` — Available model tiers.

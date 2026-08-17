@@ -1,7 +1,7 @@
 """Canonical Qoder model catalog used by routing, UI and health probes.
 
-Credit factors and capabilities mirror the current Qoder catalog-v6.  They
-are multipliers, not fixed per-request prices; promotions and request shape
+Credit factors and capabilities mirror the current Qoder catalog-v6. They are
+multipliers, not fixed per-request prices; upstream billing and request shape
 can change the final credit charge reported by upstream.
 """
 from __future__ import annotations

@@ -43,16 +43,6 @@ class AccountOut(BaseModel):
     plan_end_date: Optional[float] = None
     quota_expires_at: Optional[float] = None
     email: Optional[str] = None
-    activity_id: Optional[str] = None
-    activity_status: Optional[str] = None
-    activity_label: Optional[str] = None
-    activity_model: Optional[str] = None
-    activity_limit: Optional[int] = None
-    activity_used: int = 0
-    activity_remaining: Optional[int] = None
-    activity_expires_at: Optional[float] = None
-    activity_checked_at: Optional[float] = None
-    activity_claimed_at: Optional[float] = None
     quota_total: Optional[float] = None
     quota_used: Optional[float] = None
     quota_remaining: Optional[float] = None

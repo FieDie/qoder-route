@@ -30,6 +30,7 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_account_quota_columns(conn)
+        await _drop_legacy_activity_state(conn)
 
 
 async def _migrate_account_quota_columns(conn):
@@ -41,19 +42,6 @@ async def _migrate_account_quota_columns(conn):
         "is_paid": "BOOLEAN DEFAULT 0",
         "plan_end_date": "FLOAT",
         "email": "VARCHAR(128)",
-        "machine_id": "VARCHAR(128)",
-        "machine_token": "TEXT",
-        "machine_type": "VARCHAR(32)",
-        "activity_id": "VARCHAR(128)",
-        "activity_status": "VARCHAR(32)",
-        "activity_label": "VARCHAR(256)",
-        "activity_model": "VARCHAR(64)",
-        "activity_limit": "INTEGER",
-        "activity_used": "INTEGER NOT NULL DEFAULT 0",
-        "activity_remaining": "INTEGER",
-        "activity_expires_at": "FLOAT",
-        "activity_checked_at": "FLOAT",
-        "activity_claimed_at": "FLOAT",
         "quota_total": "FLOAT",
         "quota_used": "FLOAT",
         "quota_remaining": "FLOAT",
@@ -68,3 +56,35 @@ async def _migrate_account_quota_columns(conn):
     for name, col_type in new_columns.items():
         if name not in existing:
             await conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {name} {col_type}"))
+
+
+async def _drop_legacy_activity_state(conn):
+    """Remove the retired Qoder campaign identity/counter storage."""
+    from sqlalchemy import text
+
+    legacy_columns = (
+        "machine_id",
+        "machine_token",
+        "machine_type",
+        "activity_id",
+        "activity_status",
+        "activity_label",
+        "activity_model",
+        "activity_limit",
+        "activity_used",
+        "activity_remaining",
+        "activity_expires_at",
+        "activity_checked_at",
+        "activity_claimed_at",
+    )
+    result = await conn.execute(text("PRAGMA table_info(accounts)"))
+    existing = {row[1] for row in result.fetchall()}
+    for name in legacy_columns:
+        if name in existing:
+            await conn.execute(text(f'ALTER TABLE accounts DROP COLUMN "{name}"'))
+
+    await conn.execute(text(
+        "DELETE FROM app_settings "
+        "WHERE key IN ('accounts_auto_delete_keep_activity', "
+        "'account_activity_checks_enabled')"
+    ))

@@ -1,10 +1,9 @@
 import asyncio
 import logging
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -21,64 +20,6 @@ logger = logging.getLogger("qoderroute.pool")
 def _utcnow() -> datetime:
     """Naive UTC datetime — matches what SQLite stores/returns."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _activity_decrement_statement(account_id: int, now_ms: float):
-    return (
-        update(Account)
-        .where(
-            Account.id == account_id,
-            Account.activity_id == "qwen38_800_invoke",
-            Account.activity_status == "active",
-            Account.activity_remaining.is_not(None),
-            Account.activity_remaining > 0,
-            (
-                Account.activity_expires_at.is_(None)
-                | (Account.activity_expires_at > now_ms)
-            ),
-        )
-        .values(
-            activity_used=func.coalesce(Account.activity_used, 0) + 1,
-            activity_remaining=Account.activity_remaining - 1,
-            activity_status=case(
-                (Account.activity_remaining <= 1, "exhausted"),
-                else_="active",
-            ),
-        )
-        .execution_options(synchronize_session=False)
-    )
-
-
-def _activity_priority_statement(
-    now: datetime,
-    now_ms: float,
-    exclude_ids: Optional[set[int]] = None,
-):
-    """Exhausted credit accounts that can still spend a Qwen activity."""
-    stmt = (
-        select(Account)
-        .where(
-            Account.is_active == True,
-            Account.is_quota_exceeded == True,
-            Account.activity_id == "qwen38_800_invoke",
-            Account.activity_status == "active",
-            Account.activity_remaining.is_not(None),
-            Account.activity_remaining > 0,
-            (
-                Account.activity_expires_at.is_(None)
-                | (Account.activity_expires_at > now_ms)
-            ),
-            (
-                Account.cooldown_until.is_(None)
-                | (Account.cooldown_until < now)
-            ),
-            Account.consecutive_failures < settings.max_consecutive_failures,
-        )
-        .order_by(Account.priority.desc(), Account.id.asc())
-    )
-    if exclude_ids:
-        stmt = stmt.where(Account.id.not_in(exclude_ids))
-    return stmt
 
 
 class AccountPool:
@@ -135,23 +76,12 @@ class AccountPool:
         self,
         session: AsyncSession,
         exclude_ids: Optional[set[int]] = None,
-        model_level: Optional[str] = None,
     ) -> Optional[Account]:
         """Fill-first routing: the first available account WITH quota wins.
-        Requests stick to it until it exhausts/fails, then the next in line
-        takes over. For Qwen3.8-Max, an exhausted credit account with an
-        active free-call campaign is intentionally preferred first."""
+        Requests stick to it until it exhausts/fails, then the next takes over."""
         await self._refresh_if_stale()
 
         now = _utcnow()
-        if model_level == "qmodel_38max":
-            activity_result = await session.execute(
-                _activity_priority_statement(now, time.time() * 1000, exclude_ids)
-            )
-            activity_account = activity_result.scalars().first()
-            if activity_account is not None:
-                return activity_account
-
         stmt = (
             select(Account)
             .where(Account.is_active == True, Account.is_available == True)
@@ -224,13 +154,8 @@ class AccountPool:
             return data
 
     def _auto_delete_allowed_for(self, acc: Account) -> bool:
-        """Auto-delete setting gates: main toggle on, keep-activity respected."""
-        if not settings_service.get("accounts_auto_delete_exhausted"):
-            return False
-        if settings_service.get("accounts_auto_delete_keep_activity"):
-            if acc.activity_status == "active" and (acc.activity_remaining or 0) > 0:
-                return False
-        return True
+        """Return whether automatic deletion of exhausted accounts is enabled."""
+        return bool(settings_service.get("accounts_auto_delete_exhausted"))
 
     async def delete_exhausted_accounts(self) -> int:
         """Bulk-delete every exhausted account (used when the setting turns on)."""
@@ -313,20 +238,17 @@ class AccountPool:
         account_id: int,
         tokens_used: int = 0,
         credits_used: float = 0.0,
-        model_level: Optional[str] = None,
-    ) -> bool:
-        """Persist a successful call; return whether a free activity slot paid."""
+    ) -> None:
+        """Persist counters and credit usage for a successful call."""
         try:
             async with async_session() as session:
                 acc = await session.get(Account, account_id)
                 if not acc:
-                    return False
+                    return
 
                 acc.last_used_at = _utcnow()
                 acc.consecutive_failures = 0
                 acc.last_error_message = None
-                # A successful free activity call does not replenish the regular
-                # credit quota. Keep exhausted accounts out of other models.
                 acc.is_available = not acc.is_quota_exceeded
                 acc.cooldown_until = None
 
@@ -343,53 +265,24 @@ class AccountPool:
                     .execution_options(synchronize_session=False)
                 )
 
-                # One successful upstream completion is one campaign invocation.
-                # Keep this atomic so concurrent tool-loop turns cannot overwrite
-                # each other's local estimate.
-                activity_consumed = False
-                if model_level == "qmodel_38max":
-                    now_ms = time.time() * 1000
-                    await session.flush()
-                    activity_result = await session.execute(
-                        _activity_decrement_statement(account_id, now_ms)
-                    )
-                    activity_consumed = getattr(activity_result, "rowcount", 0) > 0
-
-                billable_credits = 0.0 if activity_consumed else credits_used
-                if activity_consumed and credits_used:
-                    logger.warning(
-                        "Upstream reported %.6f credits for activity call on account %s; "
-                        "suppressing local charge",
-                        credits_used,
-                        account_id,
-                    )
-                    logbus.push(
-                        "warn",
-                        "activity",
-                        "upstream reported credits for free activity call; local charge suppressed",
-                        account_id=account_id,
-                        upstream_credits=credits_used,
-                    )
-
                 # Lifetime pool counter — survives account purges.
-                if billable_credits:
+                if credits_used:
                     counter = await session.get(PoolCounter, CREDITS_SPENT_KEY)
                     if counter is None:
                         counter = PoolCounter(key=CREDITS_SPENT_KEY, value=0.0)
                         session.add(counter)
-                    counter.value += billable_credits
+                    counter.value += credits_used
 
                 # Drain local quota estimate; keep used+remaining in sync so the bar matches.
-                if billable_credits and acc.quota_remaining is not None:
-                    acc.quota_remaining = max(0.0, acc.quota_remaining - billable_credits)
+                if credits_used and acc.quota_remaining is not None:
+                    acc.quota_remaining = max(0.0, acc.quota_remaining - credits_used)
                     if acc.quota_used is not None:
-                        acc.quota_used = acc.quota_used + billable_credits
+                        acc.quota_used = acc.quota_used + credits_used
                     if acc.quota_remaining <= 0:
                         await self._park_exhausted(session, acc, "quota drained locally")
-                        return activity_consumed
+                        return
 
                 await session.commit()
-                return activity_consumed
         except StaleDataError:
             # The account row was deleted (manual delete / auto-delete sweep)
             # while the request was in flight. The upstream completion itself
@@ -398,7 +291,7 @@ class AccountPool:
                 "mark_success: account %s deleted concurrently; skipping bookkeeping",
                 account_id,
             )
-            return False
+            return
 
     async def mark_failure(self, account_id: int, error_message: str = ""):
         try:

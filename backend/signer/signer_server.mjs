@@ -120,25 +120,6 @@ function prepareInferRequest(ctxPtr, baseUrl, bodyJson, modelKey, modelSource) {
   return r0 >>> 0;
 }
 
-function prepareRequest(ctxPtr, endpoint, requestPath, method, auth, body, headersJson) {
-  const sp = addStack(-16);
-  const a = passString(endpoint), al = GLOBAL_LEN;
-  const b = passString(requestPath), bl = GLOBAL_LEN;
-  const c = passString(method), cl = GLOBAL_LEN;
-  const d = passString(auth), dl = GLOBAL_LEN;
-  const e = body == null ? 0 : passString(body), el = body == null ? 0 : GLOBAL_LEN;
-  const f = headersJson == null ? 0 : passString(headersJson), fl = headersJson == null ? 0 : GLOBAL_LEN;
-  wasm.qodercontext_prepareRequest(
-    sp, ctxPtr,
-    a, al, b, bl, c, cl, d, dl, e, el, f, fl,
-  );
-  const r0 = view().getInt32(sp + 0, true);
-  const r2 = view().getInt32(sp + 8, true);
-  addStack(16);
-  if (r2) throw new Error("prepareRequest failed");
-  return r0 >>> 0;
-}
-
 function resultUrl(rr) {
   const sp = addStack(-16);
   wasm.requestresult_url(sp, rr);
@@ -178,9 +159,7 @@ function freeContext(ctx) {
 }
 
 function getContext(jt, uid, machineId) {
-  // One job token may legitimately be used with a router identity for infer
-  // and a per-account machine identity for activity balance. Never reuse a
-  // QoderContext across those identities.
+  // Keep contexts isolated by job token and router machine identity.
   const cacheKey = `${jt}\0${machineId}`;
   let ctx = contexts.get(cacheKey);
   if (ctx && ctx.uid === uid) {
@@ -239,38 +218,6 @@ const server = http.createServer(async (req, res) => {
       const { jt, uid, machine_id, base_url, body_json, model_key, model_source } = input;
       const ctx = getContext(jt, uid, machine_id);
       const rr = prepareInferRequest(ctx, base_url, body_json, model_key, model_source ?? "system");
-      const out = { url: resultUrl(rr), headers: resultHeaders(rr), body_b64: resultBody(rr).toString("base64") };
-      wasm.__wbg_requestresult_free(rr, 0);
-      return send(200, out);
-    }
-
-    if (req.url === "/activity" && req.method === "POST") {
-      const { jt, uid, machine_id, machine_token, base_url } = input;
-      const allowedBases = new Set([
-        "https://api1.qoder.sh",
-        "https://api2.qoder.sh",
-        "https://api3.qoder.sh",
-      ]);
-      if (!allowedBases.has(base_url)) return send(400, { error: "invalid activity base_url" });
-      if (![jt, uid, machine_id, machine_token].every((v) => typeof v === "string" && v.length > 0)) {
-        return send(400, { error: "missing activity identity" });
-      }
-      const ctx = getContext(jt, uid, machine_id);
-      const requestHeaders = JSON.stringify({
-        Accept: "application/json",
-        "Accept-Language": "en-US",
-        "Cosy-ClientType": "5",
-        "Cosy-MachineToken": machine_token,
-      });
-      const rr = prepareRequest(
-        ctx,
-        base_url,
-        "/algo/api/v2/activity",
-        "GET",
-        "auth",
-        null,
-        requestHeaders,
-      );
       const out = { url: resultUrl(rr), headers: resultHeaders(rr), body_b64: resultBody(rr).toString("base64") };
       wasm.__wbg_requestresult_free(rr, 0);
       return send(200, out);

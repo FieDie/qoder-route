@@ -9,7 +9,7 @@ QoderRoute/
 ├── backend/
 │   ├── app/
 │   │   ├── api/                  # FastAPI routers (HTTP endpoints)
-│   │   │   ├── accounts.py       # CRUD, pool status, stats, quota/activity endpoints
+│   │   │   ├── accounts.py       # CRUD, pool status, quota and traffic-stat endpoints
 │   │   │   ├── chat.py           # /v1/chat/completions implementation
 │   │   │   ├── models.py         # /v1/models + /api/models/catalog
 │   │   │   ├── logs.py           # /api/logs (+ SSE streaming)
@@ -21,13 +21,12 @@ QoderRoute/
 │   │   │   ├── database.py       # async engine, Base, init_db() with migrations
 │   │   │   └── __init__.py
 │   │   ├── models/               # SQLAlchemy ORM models & schemas
-│   │   │   ├── account.py        # Account table (PAT, quota, activity fields)
+│   │   │   ├── account.py        # Account table (PAT, plan, quota, usage fields)
 │   │   │   ├── app_setting.py    # AppSetting table (key/value DB-backed settings)
 │   │   │   ├── pool_counter.py   # PoolCounter table (lifetime credits_spent counter)
 │   │   │   └── schemas.py        # Pydantic models: AccountCreate/Update/Out, ChatCompletion*, DashboardStats*
 │   │   ├── services/             # Business logic services
 │   │   │   ├── account_pool.py   # AccountPool class (rotation, refresh, mark_success/failure)
-│   │   │   ├── activity_service.py   # Eligibility claim, signed balance for qwen38_800_invoke
 │   │   │   ├── direct_client.py      # Build native request body, run_infer generator (signer→upstream stream)
 │   │   │   ├── logbus.py               # In-memory ring buffer + SSE subscribers
 │   │   │   ├── model_catalog.py         # Canonical model keys, credit factors and capabilities
@@ -47,7 +46,6 @@ QoderRoute/
 │   │   └── signer.log/pid/.start.lock (runtime files)
 │   ├── tests/                        # [gitignored, local only] pytest regression suite
 │   │   ├── conftest.py
-│   │   ├── test_activity_service.py
 │   │   ├── test_model_catalog.py
 │   │   ├── test_runtime_settings.py
 │   │   ├── test_signer_resilience.py
@@ -141,7 +139,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 - **Routers:** Each feature's HTTP routes are defined in a dedicated file under `backend/app/api/`. These are included in `app/main.py` via `app.include_router()`.
 
 - **Business Logic:** Implementation lives in `backend/app/services/`. Key services:
-  - `account_pool.py`: Account rotation, quota tracking, success/failure bookkeeping, free-call activity usage for `qmodel_38max`.
+  - `account_pool.py`: Account rotation, quota tracking, and success/failure bookkeeping.
   - `model_catalog.py`: Single source of truth for public model keys, names, credit factors, context windows and Reasoning/Thinking capabilities.
   - `model_probe.py`: Probes only the canonical keys selected by the `probe_model_keys` runtime setting.
   - `quota_service.py`: PAT validation, job token exchange, plan/quota userinfo fetching.
@@ -166,7 +164,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   `looks_like_quota_error()` deliberately excludes 429/rate-limit markers — those are transient backpressure handled via `looks_like_rate_limit()` and the normal failure-cooldown path. Only genuine quota markers (`quota`, `credits exhausted`, `isquotaexceeded`, `insufficient credits`) park an account. Never add rate-limit patterns back into the quota matcher: with auto-delete enabled that silently destroys healthy accounts.
 
 - **Backend Datetimes Are Naive UTC**  
-  `_utcnow()` stores naive UTC datetimes; JSON responses contain strings like `"2026-08-11T10:00:00"` with no offset marker. The frontend MUST parse them as UTC (`lib/utils.ts: parseUtc` appends `Z`) — plain `new Date(s)` would parse them as browser-local time. Epoch-float fields (`plan_end_date`, `quota_expires_at`, `activity_expires_at`, `*_fetched_at`) are milliseconds and unaffected.
+  `_utcnow()` stores naive UTC datetimes; JSON responses contain strings like `"2026-08-11T10:00:00"` with no offset marker. The frontend MUST parse them as UTC (`lib/utils.ts: parseUtc` appends `Z`) — plain `new Date(s)` would parse them as browser-local time. Epoch-float fields (`plan_end_date`, `quota_expires_at`, `*_fetched_at`) are milliseconds and unaffected.
 
 - **Plan Display Names Come From Quota Size**  
   The Qoder plan endpoint cannot distinguish paid tiers. `quota_service._plan_name_from_quota()` maps `quota_total` to names: ≥2,000 → Pro Plan, ≥6,000 → Pro+ Plan, ≥20,000 → Ultra Plan. Trial tiers (`personal_professional_trial`) keep the API-reported name. Do not "fix" this by trusting `plan_tier_name` for paid tiers.
@@ -180,7 +178,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   `backend/tests/` is deliberately excluded from Git. It may exist in the shared development workspace, but a clean clone will not contain it. Do not make production imports depend on tests, and do not claim tests were run unless the directory is actually present.
 
 - **Exhausted Accounts Are Not Polled**  
-  The background quota loop (`_quota_refresher`) only refreshes non-exhausted accounts (`is_quota_exceeded == False`). Exhausted accounts remain untouched until manually refreshed via `/api/accounts/{id}/quota/refresh` — which, when credits are back, also restores `is_available`, clears cooldown/failures, and rejoins routing immediately. With `accounts_auto_delete_exhausted` enabled, parking is replaced by deletion (skipped for accounts with an active free-call activity when `accounts_auto_delete_keep_activity` is on).
+  The background quota loop (`_quota_refresher`) only refreshes non-exhausted accounts (`is_quota_exceeded == False`). Exhausted accounts remain untouched until manually refreshed via `/api/accounts/{id}/quota/refresh` — which, when credits are back, also restores `is_available`, clears cooldown/failures, and rejoins routing immediately. With `accounts_auto_delete_exhausted` enabled, parking is replaced by deletion.
 
 - **Concurrent Delete vs In-Flight Request**  
   `mark_success` / `mark_failure` catch `StaleDataError`: an account deleted (manual or auto-sweep) while its request was streaming must not turn a successful completion into a 500. Keep these handlers in place when editing bookkeeping code.
@@ -196,7 +194,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   The public endpoint `/v1/models` returns model objects with `id` set to canonical catalog keys (for example `qmodel_38max`, `cmodel`, `ultimate`). Clients should pass these exact strings. Friendly names such as `"Qwen3.8-Max"` are normalized by `resolve_model_level()`, but canonical IDs are preferred. `qmodel_preview` is a private compatibility key and must not be advertised as Qwen3.8-Max.
 
 - **Model Catalog Is the Single Source of Truth**
-  Add or change public models in `services/model_catalog.py`; do not independently hardcode another public list in routing, API handlers, probes, or the frontend. `QODER_MODEL_DISPLAY`, `/v1/models`, `/api/models/catalog`, `MODEL_KEY_MAP`, account selectors, and probe choices must stay derived from this catalog. Credit factors are base multipliers and can be reduced by promotions or activities.
+  Add or change public models in `services/model_catalog.py`; do not independently hardcode another public list in routing, API handlers, probes, or the frontend. `QODER_MODEL_DISPLAY`, `/v1/models`, `/api/models/catalog`, `MODEL_KEY_MAP`, account selectors, and probe choices must stay derived from this catalog. Credit factors are base multipliers; actual upstream billing can vary.
 
 - **Reasoning and Thinking Are Different Capabilities**
   `is_reasoning` mirrors Qoder's model classification. `supports_thinking` mirrors the presence of `thinking_config`. Kimi-K3 (`kmodel_latest`) is the important counterexample: `is_reasoning=false`, but thinking is enabled with `low/high/max` effort and defaults to `max`. Kimi-K2.7-Code (`kmodel`) has no thinking config in the current catalog. Never infer thinking support from `is_reasoning` alone.
@@ -217,11 +215,9 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 1. **Ingest:** Client POSTs JSON to `POST /v1/chat/completions` with `messages`, optionally `tools`, `reasoning_effort`, `fast`, `context_window`, `max_tokens`. Body validated by `ChatCompletionRequest` schema.
 
-2. **Resolve Model:** `resolve_model_level(request.model)` normalizes input against `model_catalog.py` to a canonical level key (e.g., `"qmodel_38max"`). For Qwen3.8-Max special routing rules apply.
+2. **Resolve Model:** `resolve_model_level(request.model)` normalizes input against `model_catalog.py` to a canonical level key (e.g., `"qmodel_38max"`).
 
-3. **Select Account:** `pool.get_next_account(db, exclude_ids=set(), model_level=key)` executes:
-   - If `model_level == "qmodel_38max"`, check exhausted-credit accounts with active `qwen38_800_invoke` campaign first.
-   - Otherwise, select first `is_active && is_available && !is_quota_exceeded && cooldown_ok` account ordered by priority desc, id asc.
+3. **Select Account:** `pool.get_next_account(db, exclude_ids=set())` selects the first `is_active && is_available && !is_quota_exceeded && cooldown_ok` account ordered by priority desc, id asc.
 
 4. **Prepare Upstream Request:** `direct_client.run_infer(pat, model_level, messages, ...)` performs:
    - Job token exchange via `quota_service.get_job_token(pat)` (cached).
@@ -234,9 +230,9 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 6. **Map to OpenAI Chunks:** In streaming mode, each SSE chunk from Qoder is wrapped into OpenAI-style `chat.completion.chunk` format and yielded via `StreamingResponse`. Final chunk includes usage metrics and finish_reason.
 
 7. **Bookkeeping:** On `done`:
-   - `pool.mark_success(account_id, tokens_used, credits_used, model_level)` updates counters. If activity consumed was used, credits are zeroed locally but upstream credits are logged.
+   - `pool.mark_success(account_id, tokens_used, credits_used)` updates counters and local quota estimates.
    - Log entry pushed via `logbus.push("info", "chat", ...)`.
-   - Usage stats reflected immediately in dashboard/activity queries.
+   - Usage stats reflected immediately in dashboard traffic queries.
 
 8. **Failure Handling:** Errors classified by source (infrastructure, quota, model_queue, account):
    - Infrastructure: raise HTTPException (immediate failure).
@@ -260,7 +256,6 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   - `test_signer_resilience.py`: Tests concurrent ensure-signer locking, recovery loops.
   - `test_runtime_settings.py`: Validates SettingsUpdate schema constraints for known keys.
   - `test_model_catalog.py`: Verifies catalog metadata, canonical routing identities, API output, and runtime probe selection.
-  - `test_activity_service.py`: Covers eligibility checks, claim outcomes, rowcount expectations.
   - `test_thinking_regression.py`: Verifies correct model config (context length, reasoning enums) for specific model levels.
 
 When writing new tests, follow existing patterns: define fake sessions/repositories for isolation, mock network calls, and assert both side-effects (session state changes) and return values.

@@ -147,7 +147,6 @@ async def chat_completions(
         account = await pool.get_next_account(
             db,
             exclude_ids=tried_ids,
-            model_level=model_level,
         )
         if not account:
             break
@@ -320,15 +319,11 @@ async def chat_completions(
             await pool.mark_failure(account_id, error_msg)
             raise HTTPException(status_code=error_status or 502, detail=error_msg)
 
-        upstream_credits = final_usage.get("credits") or 0.0
-        activity_consumed = await pool.mark_success(
+        await pool.mark_success(
             account_id,
             final_usage.get("completion_tokens", 0),
-            upstream_credits,
-            model_level,
+            final_usage.get("credits") or 0.0,
         )
-        if activity_consumed is True:
-            final_usage["credits"] = 0.0
         final_tool_calls = _finalize_tool_calls(final_tool_call_fragments)
         logbus.push(
             "info", "chat", f"completion ok",
@@ -345,10 +340,6 @@ async def chat_completions(
             function_call=bool(final_function_call),
             finish_reason=final_finish_reason,
             credits=final_usage.get("credits", 0),
-            activity_free_call=activity_consumed is True,
-            upstream_reported_credits=(
-                upstream_credits if activity_consumed is True else 0.0
-            ),
             **final_diagnostics,
         )
 
@@ -465,18 +456,11 @@ def _sse_response(
                     saw_done = True
                     usage = event.get("usage") or {}
                     diagnostics = event.get("diagnostics") or {}
-                    upstream_credits = usage.get("credits") or usage.get("total_credits") or 0.0
-                    activity_consumed = await pool.mark_success(
+                    await pool.mark_success(
                         account_id,
                         usage.get("completion_tokens", 0),
-                        upstream_credits,
-                        model_level,
+                        usage.get("credits") or usage.get("total_credits") or 0.0,
                     )
-                    if activity_consumed is True:
-                        usage = dict(usage)
-                        usage["credits"] = 0.0
-                        if "total_credits" in usage:
-                            usage["total_credits"] = 0.0
                     logbus.push(
                         "info", "chat", f"stream done",
                         account_id=account_id, model=model_level,
@@ -492,10 +476,6 @@ def _sse_response(
                         function_call_chunks=function_call_chunks,
                         finish_reason=event.get("finish_reason"),
                         credits=usage.get("credits", 0),
-                        activity_free_call=activity_consumed is True,
-                        upstream_reported_credits=(
-                            upstream_credits if activity_consumed is True else 0.0
-                        ),
                         **diagnostics,
                     )
                     yield _openai_chunk(

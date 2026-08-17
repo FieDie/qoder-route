@@ -19,8 +19,6 @@ class SettingsUpdate(BaseModel):
     accounts_show_tokens: Optional[bool] = None
     accounts_show_requests: Optional[bool] = None
     accounts_auto_delete_exhausted: Optional[bool] = None
-    accounts_auto_delete_keep_activity: Optional[bool] = None
-    account_activity_checks_enabled: Optional[bool] = None
     qoder_infer_base: Optional[Literal["api1", "api2", "api3"]] = None
     probe_interval_minutes: Optional[int] = None
     probe_model_keys: Optional[list[str]] = None
