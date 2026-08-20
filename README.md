@@ -2,6 +2,12 @@
 
 QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qoder (qoder.sh). It maintains a pool of Qoder accounts (via PAT tokens), accepts requests formatted for the OpenAI chat API at `/v1/chat/completions` and the Anthropic Messages API at `/v1/messages`, signs outbound requests through a Node.js WASM sidecar, forwards them to Qoder upstream endpoints (`api1/2/3.qoder.sh`), and automatically rotates between accounts when quota is exhausted. The project includes a React + TypeScript admin panel for monitoring accounts, quotas, the Qoder model catalog and credit multipliers, model health, live request logs via SSE, and runtime settings.
 
+## Dashboard Preview
+
+![QoderRoute Dashboard](public/dashboard-preview.png)
+
+*Real-time pool telemetry: account health, traffic, per-model usage, credits, and live error monitoring.*
+
 ## Features
 
 - **Account Pool with Fill‑First Rotation**  
