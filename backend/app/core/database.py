@@ -50,12 +50,32 @@ async def _migrate_account_quota_columns(conn):
         "is_quota_exceeded": "BOOLEAN DEFAULT 0",
         "quota_expires_at": "FLOAT",
         "quota_fetched_at": "FLOAT",
+        "machine_id": "VARCHAR(36)",
     }
     result = await conn.execute(text("PRAGMA table_info(accounts)"))
     existing = {row[1] for row in result.fetchall()}
     for name, col_type in new_columns.items():
         if name not in existing:
             await conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {name} {col_type}"))
+    # Backfill machine_id for accounts created before the column existed.
+    await _backfill_machine_ids(conn)
+
+
+async def _backfill_machine_ids(conn):
+    """Assign a random UUID machine_id to accounts that predate the column.
+
+    Each account must present as a unique device to Qoder's anti-fraud, so a
+    shared/empty machine_id is unacceptable."""
+    import uuid
+    from sqlalchemy import text
+
+    result = await conn.execute(text(
+        "SELECT id FROM accounts WHERE machine_id IS NULL OR machine_id = ''"))
+    rows = result.fetchall()
+    for (account_id,) in rows:
+        await conn.execute(text(
+            "UPDATE accounts SET machine_id = :mid WHERE id = :aid"),
+            {"mid": str(uuid.uuid4()), "aid": account_id})
 
 
 async def _drop_legacy_activity_state(conn):
@@ -63,7 +83,6 @@ async def _drop_legacy_activity_state(conn):
     from sqlalchemy import text
 
     legacy_columns = (
-        "machine_id",
         "machine_token",
         "machine_type",
         "activity_id",

@@ -341,6 +341,12 @@ export function Settings() {
                 checked={data?.worker_retry_allow ?? false}
                 onChange={(v) => set({ worker_retry_allow: v })}
               />
+              <SettingRow
+                title="Use proxy"
+                hint="Route worker traffic through the localhost:8080 proxy API (adds --proxy-use to shyla_qoder)."
+                checked={data?.worker_proxy_use ?? false}
+                onChange={(v) => set({ worker_proxy_use: v })}
+              />
             </div>
           )}
         </Card>

@@ -156,7 +156,7 @@ export function useWorkerStatus() {
 export function useRunWorker() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: { pat: string; retry_allow: boolean; auto_add: boolean }) =>
+    mutationFn: (data: { pat: string; retry_allow: boolean; auto_add: boolean; proxy: string | null }) =>
       api<WorkerStatus>('/api/worker/run', { method: 'POST', body: JSON.stringify(data) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['worker-status'] })

@@ -11,6 +11,12 @@ class Account(Base):
     pat_token = Column(Text, nullable=False)
     pat_short = Column(String(32), nullable=False)
 
+    # Unique machine identity per account (UUID for anti-fraud)
+    machine_id = Column(String(36), nullable=False, default=lambda: str(__import__("uuid").uuid4()))
+
+    # Unique machine identity per account (UUID for anti-fraud)
+    machine_id = Column(String(36), nullable=True)  # Nullable for backwards compat, set on first use
+
     is_active = Column(Boolean, default=True, nullable=False)
     is_available = Column(Boolean, default=True, nullable=False)
     priority = Column(Integer, default=0, nullable=False)

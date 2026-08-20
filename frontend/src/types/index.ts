@@ -79,6 +79,7 @@ export interface WorkerQueueItem {
   pat_short: string
   retry_allow: boolean
   auto_add: boolean
+  has_proxy: boolean
 }
 
 export interface WorkerStatus {
@@ -99,6 +100,7 @@ export type QoderInferBase = 'api1' | 'api2' | 'api3'
 export interface AppSettings {
   worker_logs_enabled: boolean
   worker_retry_allow: boolean
+  worker_proxy_use: boolean
   accounts_show_email: boolean
   accounts_show_tokens: boolean
   accounts_show_requests: boolean

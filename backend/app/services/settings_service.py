@@ -27,6 +27,7 @@ PROBE_INTERVALS = (0, 5, 10, 15, 20, 25, 30, 60)  # minutes; 0 disables probing
 _DEFAULTS: dict[str, SettingValue] = {
     "worker_logs_enabled": True,
     "worker_retry_allow": False,
+    "worker_proxy_use": False,
     "accounts_show_email": True,
     "accounts_show_tokens": True,
     "accounts_show_requests": True,

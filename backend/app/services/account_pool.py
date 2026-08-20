@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -347,6 +348,8 @@ class AccountPool:
             priority=priority,
             model_level=model_level,
             default_model=default_model,
+            # Generate unique machine_id for anti-fraud (random UUID per account)
+            machine_id=str(uuid.uuid4()),
         )
         session.add(account)
         await session.commit()

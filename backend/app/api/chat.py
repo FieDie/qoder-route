@@ -165,6 +165,7 @@ async def chat_completions(
                 body.context_window,
                 body.max_tokens,
                 session_id,
+                machine_id=getattr(account, 'machine_id', None),
             )
 
         if body.stream:

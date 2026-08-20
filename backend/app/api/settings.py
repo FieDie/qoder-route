@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 class SettingsUpdate(BaseModel):
     worker_logs_enabled: Optional[bool] = None
     worker_retry_allow: Optional[bool] = None
+    worker_proxy_use: Optional[bool] = None
     accounts_show_email: Optional[bool] = None
     accounts_show_tokens: Optional[bool] = None
     accounts_show_requests: Optional[bool] = None
