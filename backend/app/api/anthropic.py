@@ -144,6 +144,11 @@ def _convert_messages(body: AnthropicRequest) -> list[dict]:
     if system:
         out.append({"role": "system", "content": system})
 
+    # Map tool_use id → tool name so tool_result messages can carry the
+    # function name (OpenCode/OpenAI clients include it; Qoder's history
+    # format expects it for continuity in tool loops).
+    tool_name_by_id: dict[str, str] = {}
+
     for msg in body.messages:
         role = msg.role if msg.role in ("user", "assistant") else "user"
         content = msg.content
@@ -158,9 +163,11 @@ def _convert_messages(body: AnthropicRequest) -> list[dict]:
 
         texts: list[str] = []
         thinking_text = ""
+        thinking_signature = ""
         tool_calls: list[dict] = []
         tool_messages: list[dict] = []
         image_parts: list[dict] = []
+        passthrough_blocks: list[dict] = []
 
         for block in content:
             if not isinstance(block, dict):
@@ -171,9 +178,17 @@ def _convert_messages(body: AnthropicRequest) -> list[dict]:
                 texts.append(block.get("text", ""))
             elif btype == "thinking":
                 thinking_text += block.get("thinking", "")
+                if block.get("signature"):
+                    thinking_signature += block["signature"]
+            elif btype == "redacted_thinking":
+                # opaque encrypted reasoning state — pass through for
+                # _normalize_message to restore as reasoning_item
+                passthrough_blocks.append(block)
             elif btype == "tool_use" and role == "assistant":
+                call_id = block.get("id") or f"call_{uuid.uuid4().hex[:20]}"
+                tool_name_by_id[call_id] = block.get("name", "")
                 tool_calls.append({
-                    "id": block.get("id") or f"call_{uuid.uuid4().hex[:20]}",
+                    "id": call_id,
                     "type": "function",
                     "function": {
                         "name": block.get("name", ""),
@@ -181,11 +196,16 @@ def _convert_messages(body: AnthropicRequest) -> list[dict]:
                     },
                 })
             elif btype == "tool_result":
-                tool_messages.append({
+                tool_message = {
                     "role": "tool",
                     "tool_call_id": block.get("tool_use_id", ""),
                     "content": _tool_result_content(block),
-                })
+                }
+                # attach the function name from the originating tool_use
+                name = tool_name_by_id.get(block.get("tool_use_id", ""))
+                if name:
+                    tool_message["name"] = name
+                tool_messages.append(tool_message)
             elif btype == "image":
                 converted = _image_block_to_openai(block)
                 if converted:
@@ -199,6 +219,16 @@ def _convert_messages(body: AnthropicRequest) -> list[dict]:
             message: dict = {"role": "assistant", "content": "\n".join(t for t in texts if t)}
             if thinking_text:
                 message["reasoning_content"] = thinking_text
+            # Preserve the signature so Qoder's reasoning state survives
+            # multi-turn tool loops (dropping it breaks agentic continuity).
+            if thinking_signature:
+                message["reasoning_content_signature"] = thinking_signature
+                message["signature"] = thinking_signature
+            if passthrough_blocks:
+                message["content"] = (
+                    [{"type": "text", "text": "\n".join(t for t in texts if t)}]
+                    if any(t for t in texts) else []
+                ) + passthrough_blocks
             if tool_calls:
                 message["tool_calls"] = tool_calls
             out.append(message)
@@ -373,6 +403,7 @@ async def create_message(
         while True:
             final_text = ""
             final_thinking = ""
+            final_reasoning_signature = ""
             final_tool_call_fragments: dict[int, dict] = {}
             final_function_call: dict = {}
             final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -386,6 +417,8 @@ async def create_message(
                     final_text += event["text"]
                 elif event["type"] == "thinking":
                     final_thinking += event["thinking"]
+                elif event["type"] == "reasoning_signature":
+                    final_reasoning_signature += event["signature"]
                 elif event["type"] == "tool_calls":
                     _merge_tool_call_fragments(final_tool_call_fragments, event["tool_calls"])
                 elif event["type"] == "function_call":
@@ -447,7 +480,10 @@ async def create_message(
 
         content_blocks: list[dict] = []
         if final_thinking:
-            content_blocks.append({"type": "thinking", "thinking": final_thinking})
+            thinking_block = {"type": "thinking", "thinking": final_thinking}
+            if final_reasoning_signature:
+                thinking_block["signature"] = final_reasoning_signature
+            content_blocks.append(thinking_block)
         content_blocks.append({"type": "text", "text": final_text})
         for call in final_tool_calls:
             try:
@@ -611,6 +647,21 @@ def _anthropic_sse_response(
                         "type": "content_block_delta",
                         "index": open_block_index,
                         "delta": {"type": "thinking_delta", "thinking": event["thinking"]},
+                    })
+                elif etype == "reasoning_signature":
+                    # Qoder streams the reasoning signature separately; the
+                    # Anthropic wire format carries it as a signature_delta on
+                    # the open thinking block. Round-tripping it lets clients
+                    # (Claude Code) preserve reasoning state across turns.
+                    if open_block_type != "thinking":
+                        closed = close_block()
+                        if closed:
+                            yield closed
+                        yield open_block("thinking", {"type": "thinking", "thinking": ""})
+                    yield _sse_event("content_block_delta", {
+                        "type": "content_block_delta",
+                        "index": open_block_index,
+                        "delta": {"type": "signature_delta", "signature": event["signature"]},
                     })
                 elif etype == "tool_calls":
                     _merge_tool_call_fragments(tool_fragments, event["tool_calls"])
