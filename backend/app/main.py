@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api import accounts, chat, models, logs, settings as settings_api, status as status_api
+from app.api import accounts, chat, models, logs, settings as settings_api, status as status_api, anthropic
 from app.services.account_pool import pool
 from app.services import settings_service, signer_service, model_probe
 
@@ -117,6 +117,7 @@ app.add_middleware(
 
 app.include_router(accounts.router)
 app.include_router(chat.router)
+app.include_router(anthropic.router)
 app.include_router(models.router)
 if worker is not None:
     app.include_router(worker.router)
