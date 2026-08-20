@@ -4,7 +4,7 @@ QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qod
 
 ## Dashboard Preview
 
-![QoderRoute Dashboard](public/dashboard-preview.png)
+![QoderRoute Dashboard](public/dashboard-preview-v2.png)
 
 *Real-time pool telemetry: account health, traffic, per-model usage, credits, and live error monitoring.*
 
