@@ -79,7 +79,13 @@ def _anthropic_error(status: int, error_type: str, message: str) -> JSONResponse
     )
 
 
+import re
+
+
 def _resolve_level(requested: str) -> str:
+    # Claude Code appends context-window suffixes like "[1m]" or "[200k]"
+    # to model names; strip them so "glm-5.3[1m]" resolves like "glm-5.3".
+    requested = re.sub(r"\[\d+[km]\]$", "", requested.strip())
     if requested and requested.lower() != "auto":
         resolved = resolve_model_level(requested)
         if resolved != "auto":
