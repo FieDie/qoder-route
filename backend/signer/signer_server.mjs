@@ -145,7 +145,7 @@ function resultBody(rr) {
   return Buffer.from(bytes);
 }
 
-const COSY_VERSION = "1.1.17";
+const COSY_VERSION = "1.1.26";
 // Exact Qoder CLI 1.1.17 client identity.  The numeric string is a routing
 // discriminator used by the signed inference context; "cli" here can leave
 // newer catalog models on a legacy upstream node.

@@ -11,8 +11,8 @@ import httpx
 logger = logging.getLogger("qoderroute.quota")
 
 QODER_BASE = "https://openapi.qoder.sh"
-QODER_UA = "qoder/1.1.17"
-QODER_VERSION = "1.1.17"
+QODER_UA = "qoder/1.1.26"
+QODER_VERSION = "1.1.26"
 
 EXCHANGE_URL = f"{QODER_BASE}/api/v1/jobToken/exchange"
 PLAN_URL = f"{QODER_BASE}/api/v2/user/plan"

@@ -308,7 +308,7 @@ def _build_body(messages: list[dict], model_key: str, tools: Optional[list[dict]
             if max_tokens is not None and max_tokens > 0
             else _DEFAULT_MAX_OUTPUT_TOKENS
         ),
-        # This is the field emitted by Qoder CLI 1.1.17.  Putting the value in
+        # This is the field emitted by Qoder CLI. Putting the value in
         # model_config.context_window is ignored by the inference request path,
         # leaving the model on its smaller default window.  Once the prompt
         # grows into the reserved reasoning space, upstream then omits thinking.
@@ -373,7 +373,7 @@ def _build_body(messages: list[dict], model_key: str, tools: Optional[list[dict]
         # gateway returns `[FAIL]node:oa_qwen-plus... Execution failed: null`.
         "business": {
             "product": "cli",
-            "version": "1.1.17",
+            "version": "1.1.26",
             "type": "agent",
             "id": str(uuid.uuid4()),
             "name": _business_name(last_user_text),
@@ -575,7 +575,7 @@ async def run_infer(
         # qoder-server-request injects these identity headers after the WASM
         # signer returns.  The first two normally already exist; MachineOS is
         # transport-owned and therefore must be supplied here explicitly.
-        headers.setdefault("Cosy-Version", "1.1.17")
+        headers.setdefault("Cosy-Version", "1.1.26")
         headers.setdefault("Cosy-ClientType", "5")
         headers.setdefault("Cosy-MachineOS", "x86_64_linux")
         headers.setdefault("User-Agent", QODER_INFER_USER_AGENT)
