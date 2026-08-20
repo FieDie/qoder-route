@@ -24,6 +24,18 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 # ── Static routes FIRST (before /{account_id} shadow-catches them) ──
 
+# Log messages that mark a finished completion in either API dialect. The
+# Anthropic endpoints log their own spellings, so the activity aggregation
+# must list them all — otherwise Anthropic traffic silently drops out of
+# the Usage charts.
+_COMPLETION_MESSAGES = frozenset({
+    "stream done",              # OpenAI streaming
+    "completion ok",            # OpenAI non-streaming
+    "anthropic stream done",    # Anthropic streaming
+    "anthropic completion ok",  # Anthropic non-streaming
+})
+
+
 @router.get("/models/list", response_model=list[dict])
 async def get_available_models():
     return [
@@ -70,7 +82,7 @@ async def dashboard_activity():
     totals = {"requests": 0, "tokens": 0, "credits": 0.0}
 
     for e in logbus.recent(limit=2000):
-        if e.get("source") != "chat" or e.get("message") not in ("stream done", "completion ok"):
+        if e.get("source") != "chat" or e.get("message") not in _COMPLETION_MESSAGES:
             continue
         ts = float(e.get("ts") or 0)
         if ts < start:

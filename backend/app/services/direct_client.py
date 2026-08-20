@@ -12,7 +12,13 @@ from typing import Any, AsyncGenerator, Optional
 
 import httpx
 
-from app.services.quota_service import get_job_token, get_uid, looks_like_quota_error
+from app.services.quota_service import (
+    get_job_token,
+    get_uid,
+    looks_like_quota_error,
+    parse_model_queue,
+    MODEL_QUEUE_ERROR_CODE,
+)
 from app.services import settings_service, signer_service
 from app.services.model_catalog import MODEL_CATALOG
 
@@ -169,6 +175,33 @@ def _resolve_infer_base() -> str:
 def _normalize_effort(effort: Optional[str], model_key: str) -> str:
     """Use the strongest effort name accepted by the selected model."""
     return _MAX_REASONING_EFFORT_BY_MODEL.get(model_key, "max")
+
+
+def _extract_queue_payload(text: str) -> Optional[str]:
+    """Return the raw inner ``{"code":"10605",...}`` payload from a 403 body.
+
+    Accepts both a direct queue body and the forwarded wrapper
+    ``{"detail": "upstream status 403: {\\"code\\":\\"10605\\",...}"}``.
+    Parsing the substring from ``{`` with json.loads (via parse_model_queue)
+    keeps escaped quotes intact. The previous string-replace tricks never
+    produced valid JSON: stripping ``"upstream status "`` left the ``403:``
+    prefix behind, and blanket-unescaping ``\\"`` corrupted payloads whose
+    own values contain quotes — so the queue payload never reached the API
+    layer and the isQueued-based retry never fired.
+    """
+    if parse_model_queue(text) is not None:
+        return text[text.index("{"):]
+    parsed = _try_json(text)
+    detail = parsed.get("detail") if isinstance(parsed, dict) else None
+    if (
+        isinstance(detail, str)
+        and MODEL_QUEUE_ERROR_CODE in detail
+        and "{" in detail
+    ):
+        inner = detail[detail.index("{"):]
+        if parse_model_queue(inner) is not None:
+            return inner
+    return None
 
 
 def _text_content(content: Any) -> str:
@@ -716,42 +749,16 @@ async def run_infer(
             if resp.status_code == 403:
                 # Check for queue error (10605) in the response body
                 text = (await resp.aread()).decode("utf-8", "replace")[:1000]
-                
-                # Try to parse outer JSON first
-                parsed_outer = _try_json(text)
-                if isinstance(parsed_outer, dict):
-                    detail = parsed_outer.get("detail")
-                    if isinstance(detail, str):
-                        # detail contains: "upstream status 403: {...}" - extract inner JSON
-                        if "upstream status" in detail:
-                            inner_text = detail.replace('upstream status ', '')
-                            try:
-                                parsed_inner = json.loads(inner_text)
-                                if isinstance(parsed_inner, dict) and str(parsed_inner.get("code")) == "10605":
-                                    msg = f"model queued (10605): {inner_text[:500]}"
-                                    yield {"type": "error", "status": 403, "message": msg}
-                                    return
-                            except (ValueError, TypeError):
-                                pass
-                        
-                        # Also try unescaped nested message
-                        if '"message"' in detail and '"isQueued"' in detail:
-                            try:
-                                # Replace escaped quotes temporarily to parse
-                                normalized = detail.replace('\\"', '"')
-                                inner = json.loads(normalized)
-                                if isinstance(inner, dict) and str(inner.get("code")) == "10605":
-                                    msg = f"model queued (10605): {normalized[:500]}"
-                                    yield {"type": "error", "status": 403, "message": msg}
-                                    return
-                            except (ValueError, TypeError):
-                                pass
-                
-                # Fallback: check raw text for 10605 markers
-                if "10605" in text.lower():
-                    yield {"type": "error", "status": 403, "message": f"model queued (10605): {text[:500]}"}
+
+                # Yield the INNER 10605 payload (not the wrapper) so the API
+                # layer's parse_model_queue can read isQueued and trigger the
+                # quiet retry instead of surfacing a 503 to the client.
+                queue_payload = _extract_queue_payload(text)
+                if queue_payload is not None or "10605" in text.lower():
+                    msg = f"model queued (10605): {(queue_payload or text)[:500]}"
+                    yield {"type": "error", "status": 403, "message": msg}
                     return
-                
+
                 # Any other 403 is an upstream error
                 message = f"upstream HTTP 403: {text}"
                 event = {"type": "error", "status": 403, "message": message}

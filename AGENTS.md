@@ -11,6 +11,7 @@ QoderRoute/
 │   │   ├── api/                  # FastAPI routers (HTTP endpoints)
 │   │   │   ├── accounts.py       # CRUD, pool status, quota and traffic-stat endpoints
 │   │   │   ├── chat.py           # /v1/chat/completions implementation
+│   │   │   ├── anthropic.py      # /v1/messages + /v1/messages/count_tokens (Anthropic Messages API)
 │   │   │   ├── models.py         # /v1/models + /api/models/catalog
 │   │   │   ├── logs.py           # /api/logs (+ SSE streaming)
 │   │   │   ├── settings.py       # Runtime settings (GET/PUT)
@@ -136,7 +137,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 ## Conventions
 
-- **Routers:** Each feature's HTTP routes are defined in a dedicated file under `backend/app/api/`. These are included in `app/main.py` via `app.include_router()`.
+- **Routers:** Each feature's HTTP routes are defined in a dedicated file under `backend/app/api/`. These are included in `app/main.py` via `app.include_router()`. The Anthropic router (`anthropic.py`) translates the Anthropic Messages API (block content, `input_schema` tools, named SSE events) onto the same `direct_client.run_infer` pipeline as `chat.py`, reusing its account swap / queue-retry / error-classification helpers via imports from `app.api.chat`.
 
 - **Business Logic:** Implementation lives in `backend/app/services/`. Key services:
   - `account_pool.py`: Account rotation, quota tracking, and success/failure bookkeeping.
@@ -210,6 +211,12 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 - **Live Logs Replay Strategy**  
   `/api/logs/stream` first yields ~100 recent events then subscribes. Clients using `EventSource` should maintain idempotent event processing because reconnection will replay the tail again. The sequence number (`seq`) can be used to skip duplicates.
+
+- **Usage Activity Counts Completion Log Spellings**  
+  `/api/accounts/stats/activity` aggregates only log events whose `message` matches an entry in `_COMPLETION_MESSAGES` in `backend/app/api/accounts.py` — currently `"stream done"`, `"completion ok"`, `"anthropic stream done"`, `"anthropic completion ok"`. A new endpoint dialect that logs a different completion message must register it there, or its traffic silently drops out of the Usage charts (this exact bug hid all Anthropic traffic from the dashboard).
+
+- **10605 Queue Payloads Must Stay JSON-Parsed**  
+  The 403 handler in `direct_client.run_infer` extracts the inner `{"code":"10605",...}` payload via `_extract_queue_payload` (json.loads on the substring from `{`). The API layer's `parse_model_queue` reads `isQueued` from that message to drive the quiet retry. Do not replace this with string `replace()` tricks — stripping `"upstream status "` left a `403:` prefix behind and blanket-unescaping broke quoted values, so the retry never fired and clients got 503s instead.
 
 ## Data Flow Summary: Chat Request
 
