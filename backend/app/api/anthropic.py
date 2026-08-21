@@ -388,6 +388,11 @@ async def create_message(
                         first = {"type": "error", "message": "empty upstream response"}
 
             if first.get("type") == "error":
+                msg = first.get("message", "upstream error")
+                if classify_chat_error(msg, first.get("error_scope")) == "quota":
+                    logbus.push("warn", "chat", "anthropic: quota exceeded, swapping account", account_id=account_id, model=model_level)
+                    await pool.mark_quota_exceeded(account_id)
+                    continue
                 return await _handle_first_error(first, account_id, model_level)
 
             return _anthropic_sse_response(
@@ -544,10 +549,6 @@ async def create_message(
 async def _handle_first_error(first: dict, account_id: int, model_level: str):
     msg = first.get("message", "upstream error")
     error_kind = classify_chat_error(msg, first.get("error_scope"))
-    if error_kind == "quota":
-        logbus.push("warn", "chat", "anthropic: quota exceeded (stream probe)", account_id=account_id, model=model_level)
-        await pool.mark_quota_exceeded(account_id)
-        return _anthropic_error(503, "api_error", "No available accounts after quota exhaustion.")
     if error_kind == "infrastructure":
         logbus.push("error", "chat", f"anthropic: infrastructure error: {msg[:200]}", account_id=account_id, model=model_level)
         return _anthropic_error(first.get("status") or 503, "api_error", msg)

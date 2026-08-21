@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -266,13 +267,20 @@ class AccountPool:
                     .execution_options(synchronize_session=False)
                 )
 
-                # Lifetime pool counter — survives account purges.
+                # Lifetime pool counter — survives account purges. Atomic
+                # upsert for the same reason as the per-account counters:
+                # read-modify-write loses credits under parallel completions,
+                # and a plain INSERT races into IntegrityError.
                 if credits_used:
-                    counter = await session.get(PoolCounter, CREDITS_SPENT_KEY)
-                    if counter is None:
-                        counter = PoolCounter(key=CREDITS_SPENT_KEY, value=0.0)
-                        session.add(counter)
-                    counter.value += credits_used
+                    await session.execute(
+                        sqlite_insert(PoolCounter)
+                        .values(key=CREDITS_SPENT_KEY, value=float(credits_used))
+                        .on_conflict_do_update(
+                            index_elements=[PoolCounter.key],
+                            set_={"value": func.coalesce(PoolCounter.value, 0.0) + float(credits_used)},
+                        )
+                        .execution_options(synchronize_session=False)
+                    )
 
                 # Drain local quota estimate; keep used+remaining in sync so the bar matches.
                 if credits_used and acc.quota_remaining is not None:

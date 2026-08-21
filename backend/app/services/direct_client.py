@@ -816,9 +816,13 @@ async def run_infer(
             if stream_failed:
                 return
             if not stream_terminal:
+                # Truncated stream is an upstream/local transport failure, not
+                # an account problem — scope it so classify_chat_error never
+                # parks a healthy account for it.
                 yield {
                     "type": "error",
                     "message": "upstream stream ended before [DONE] or finish_reason",
+                    "error_scope": "infrastructure",
                 }
                 return
     except Exception as e:
