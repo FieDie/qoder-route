@@ -276,7 +276,8 @@ def _build_body(messages: list[dict], model_key: str, tools: Optional[list[dict]
                 fast: Optional[bool] = None,
                 context_window: Optional[int] = None,
                 max_tokens: Optional[int] = None,
-                session_id: Optional[str] = None) -> str:
+                session_id: Optional[str] = None,
+                tool_choice: Optional[object] = None) -> str:
     req_id = str(uuid.uuid4())
     resolved_session_id = normalize_session_id(session_id) or str(uuid.uuid4())
     effort = _normalize_effort(reasoning_effort, model_key)
@@ -367,6 +368,7 @@ def _build_body(messages: list[dict], model_key: str, tools: Optional[list[dict]
         "system": system_prompt,
         "messages": normalized_messages,
         "tools": [_normalize_tool(t) for t in tools] if tools else [],
+        **({"tool_choice": tool_choice} if tool_choice is not None else {}),
         "parameters": parameters,
         # Native Qoder attaches this business envelope to every agent request.
         # Qwen3.8's dedicated provider route requires it; without it the
@@ -506,6 +508,7 @@ async def run_infer(
     max_tokens: Optional[int] = None,
     session_id: Optional[str] = None,
     machine_id: Optional[str] = None,
+    tool_choice: Optional[object] = None,
 ) -> AsyncGenerator[dict, None]:
     """Direct signed infer request. Yields events:
     {"type":"text"|"thinking"|"reasoning_item"|"reasoning_signature"|
@@ -534,6 +537,7 @@ async def run_infer(
         context_window,
         max_tokens,
         resolved_session_id,
+        tool_choice=tool_choice,
     )
     request_system_prompt, request_chat_context = _context_strings(messages)
     effective_effort = _normalize_effort(reasoning_effort, model_key)

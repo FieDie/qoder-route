@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -11,11 +13,9 @@ class Account(Base):
     pat_token = Column(Text, nullable=False)
     pat_short = Column(String(32), nullable=False)
 
-    # Unique machine identity per account (UUID for anti-fraud)
-    machine_id = Column(String(36), nullable=False, default=lambda: str(__import__("uuid").uuid4()))
-
-    # Unique machine identity per account (UUID for anti-fraud)
-    machine_id = Column(String(36), nullable=True)  # Nullable for backwards compat, set on first use
+    # Unique machine identity per account (UUID for anti-fraud).
+    # Nullable for backwards compat; backfilled at startup for legacy rows.
+    machine_id = Column(String(36), nullable=True, default=lambda: str(uuid.uuid4()))
 
     is_active = Column(Boolean, default=True, nullable=False)
     is_available = Column(Boolean, default=True, nullable=False)
