@@ -10,9 +10,10 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api import accounts, chat, models, logs, settings as settings_api, status as status_api, anthropic
+from app.api import accounts, chat, models, logs, settings as settings_api, status as status_api, anthropic, auth as auth_api
 from app.services.account_pool import pool
 from app.services import settings_service, signer_service, model_probe
+from app.core.auth import AuthMiddleware
 
 # Worker endpoints are optional — the public build ships without them.
 try:
@@ -114,6 +115,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuthMiddleware)
 
 app.include_router(accounts.router)
 app.include_router(chat.router)
@@ -124,6 +126,7 @@ if worker is not None:
 app.include_router(logs.router)
 app.include_router(settings_api.router)
 app.include_router(status_api.router)
+app.include_router(auth_api.router)
 
 
 @app.get("/api/health")

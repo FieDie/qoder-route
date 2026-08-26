@@ -10,7 +10,7 @@ class Account(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(128), nullable=False)
-    pat_token = Column(Text, nullable=False)
+    pat_token = Column(Text, nullable=False, unique=True)
     pat_short = Column(String(32), nullable=False)
 
     # Unique machine identity per account (UUID for anti-fraud).

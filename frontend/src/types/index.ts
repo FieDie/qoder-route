@@ -105,6 +105,7 @@ export interface AppSettings {
   accounts_show_tokens: boolean
   accounts_show_requests: boolean
   accounts_auto_delete_exhausted: boolean
+  auth_enabled: boolean
   qoder_infer_base: QoderInferBase
   probe_interval_minutes: number
   probe_model_keys: string[]
@@ -149,4 +150,15 @@ export interface ActivityStats {
   series: ActivityPoint[]
   by_model: ModelUsage[]
   window: { requests: number; tokens: number; credits: number }
+}
+
+export interface PanelApiKey {
+  id: number
+  name: string
+  key_prefix: string
+  created_at: string | null
+}
+
+export interface CreatedPanelApiKey extends PanelApiKey {
+  key: string
 }

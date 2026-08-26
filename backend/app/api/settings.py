@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services import settings_service
+from app.services import api_key_service
 from app.services.model_catalog import MODEL_KEYS
 from app.services.settings_service import PROBE_INTERVALS
 
@@ -20,6 +21,7 @@ class SettingsUpdate(BaseModel):
     accounts_show_tokens: Optional[bool] = None
     accounts_show_requests: Optional[bool] = None
     accounts_auto_delete_exhausted: Optional[bool] = None
+    auth_enabled: Optional[bool] = None
     qoder_infer_base: Optional[Literal["api1", "api2", "api3"]] = None
     probe_interval_minutes: Optional[int] = None
     probe_model_keys: Optional[list[str]] = None
@@ -33,6 +35,12 @@ async def get_settings():
 @router.put("")
 async def update_settings(body: SettingsUpdate):
     values = {k: v for k, v in body.model_dump().items() if v is not None}
+    if values.get("auth_enabled") is True:
+        if await api_key_service.count() == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Create an API key before enabling authentication",
+            )
     if "probe_interval_minutes" in values and values["probe_interval_minutes"] not in PROBE_INTERVALS:
         raise HTTPException(
             status_code=400,

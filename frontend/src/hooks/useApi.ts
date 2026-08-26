@@ -1,16 +1,33 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Account, AccountPoolStatus, ActivityStats, AppSettings, DashboardStats, ModelCatalogEntry, ModelEntry, ModelStatusSnapshot, WorkerStatus } from '../types'
+import type { Account, AccountPoolStatus, ActivityStats, AppSettings, CreatedPanelApiKey, DashboardStats, ModelCatalogEntry, ModelEntry, ModelStatusSnapshot, PanelApiKey, WorkerStatus } from '../types'
+import { authHeaders, notifyUnauthorized } from '../lib/apiKey'
 
 const BASE = ''
 
+function errorMessage(err: { detail?: unknown; message?: string }, fallback: string): string {
+  const detail = err.detail
+  if (typeof detail === 'string' && detail) return detail
+  if (Array.isArray(detail) && typeof detail[0]?.msg === 'string') return detail[0].msg
+  if (typeof err.message === 'string' && err.message) return err.message
+  return fallback
+}
+
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
+  const { headers: extraHeaders, ...rest } = options ?? {}
   const res = await fetch(`${BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    ...options,
+    ...rest,
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(extraHeaders as Record<string, string> | undefined),
+    },
   })
+  if (res.status === 401) {
+    notifyUnauthorized()
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || err.message || 'Request failed')
+    throw new Error(errorMessage(err, 'Request failed'))
   }
   return res.json()
 }
@@ -145,6 +162,11 @@ export async function fetchAccountPat(id: number): Promise<string> {
   return data.pat
 }
 
+export async function fetchApiKeySecret(id: number): Promise<string> {
+  const data = await api<{ key: string }>(`/api/auth/keys/${id}`)
+  return data.key
+}
+
 export function useWorkerStatus() {
   return useQuery<WorkerStatus>({
     queryKey: ['worker-status'],
@@ -209,6 +231,38 @@ export function useUpdateSettings() {
     },
     onSettled: (data) => {
       if (data) qc.setQueryData(['settings'], data)
+    },
+  })
+}
+
+export function useApiKeys() {
+  return useQuery<{ keys: PanelApiKey[] }>({
+    queryKey: ['api-keys'],
+    queryFn: () => api('/api/auth/keys'),
+  })
+}
+
+export function useCreateApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) =>
+      api<CreatedPanelApiKey>('/api/auth/keys', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+    },
+  })
+}
+
+export function useDeleteApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api(`/api/auth/keys/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      qc.invalidateQueries({ queryKey: ['settings'] })
     },
   })
 }

@@ -224,25 +224,33 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=400, detail=f"Token validation failed: {msg}")
 
     # Reject plan-less (free tier) accounts up front. An account WITH a plan
-    # but no quota is still added — the quota refresh parks it as exhausted,
-    # and it can return to rotation when the plan renews.
+    # but no quota is still added — the quota refresh parks it as exhausted.
+    # Credits on Qoder are one-shot, so a failed plan fetch must not skip
+    # this check and let a free PAT into the pool.
     pq = await quota_service.fetch_plan_quota(body.pat_token)
-    if pq is not None:
-        tier = str(pq.get("plan_tier") or "").strip().lower()
-        if tier == "personal_standard":
-            raise HTTPException(
-                status_code=400,
-                detail="Free plan (personal_standard) — this account has no plan. Not added.",
-            )
+    if pq is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not fetch plan/quota from Qoder — not added. Retry when the API is reachable.",
+        )
+    tier = str(pq.get("plan_tier") or "").strip().lower()
+    if tier == "personal_standard":
+        raise HTTPException(
+            status_code=400,
+            detail="Free plan (personal_standard) — this account has no plan. Not added.",
+        )
 
-    account = await pool.add_account(
-        db,
-        name=body.name,
-        pat_token=body.pat_token,
-        priority=body.priority,
-        model_level=body.model_level,
-        default_model=body.default_model,
-    )
+    try:
+        account = await pool.add_account(
+            db,
+            name=body.name,
+            pat_token=body.pat_token,
+            priority=body.priority,
+            model_level=body.model_level,
+            default_model=body.default_model,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     await pool.refresh_quota(account.id)
     acc = await pool.get_account_by_id(db, account.id)
     return AccountOut.model_validate(acc or account)
@@ -267,7 +275,10 @@ async def update_account(account_id: int, body: AccountUpdate, db: AsyncSession 
         if not valid:
             raise HTTPException(status_code=400, detail=f"Token validation failed: {msg}")
 
-    acc = await pool.update_account(db, account_id, **update_data)
+    try:
+        acc = await pool.update_account(db, account_id, **update_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
     return AccountOut.model_validate(acc)

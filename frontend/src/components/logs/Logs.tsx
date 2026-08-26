@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ScrollText, Trash2, Pause, Play } from 'lucide-react'
 import { Card, SectionTitle } from '../ui/GlassPanel'
+import { authHeaders, logsStreamUrl, notifyUnauthorized } from '../../lib/apiKey'
 
 const BASE = ''
 
@@ -56,7 +57,9 @@ export function Logs() {
   const { data: initial } = useQuery<{ logs: LogEvent[] }>({
     queryKey: ['logs-initial'],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/logs?limit=200`)
+      const res = await fetch(`${BASE}/api/logs?limit=200`, { headers: authHeaders() })
+      if (res.status === 401) notifyUnauthorized()
+      if (!res.ok) throw new Error('Failed to load logs')
       return res.json()
     },
     staleTime: 0,
@@ -78,7 +81,7 @@ export function Logs() {
       return
     }
 
-    const es = new EventSource(`${BASE}/api/logs/stream`)
+    const es = new EventSource(logsStreamUrl())
     evtSourceRef.current = es
 
     es.onmessage = (e) => {

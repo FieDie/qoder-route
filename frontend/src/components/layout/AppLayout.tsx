@@ -8,7 +8,8 @@ import { Logs } from '../logs/Logs'
 import { Settings } from '../settings/Settings'
 import { Status } from '../status/Status'
 import { Models } from '../models/Models'
-import { LayoutDashboard, Users, TerminalSquare, ScrollText, Settings as SettingsIcon, Activity, Cpu, Menu, X } from 'lucide-react'
+import { Authentication } from '../auth/Authentication'
+import { LayoutDashboard, Users, TerminalSquare, ScrollText, Settings as SettingsIcon, Activity, Cpu, Menu, X, KeyRound } from 'lucide-react'
 
 const NAV: { path: string; label: string; icon: React.ReactNode; hint: string }[] = [
   { path: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={16} />, hint: 'Overview' },
@@ -19,6 +20,7 @@ const NAV: { path: string; label: string; icon: React.ReactNode; hint: string }[
   { path: '/models', label: 'Models', icon: <Cpu size={16} />, hint: 'Catalog' },
   { path: '/status', label: 'Status', icon: <Activity size={16} />, hint: 'Models' },
   { path: '/logs', label: 'Logs', icon: <ScrollText size={16} />, hint: 'Activity' },
+  { path: '/auth', label: 'Authentication', icon: <KeyRound size={16} />, hint: 'Keys' },
   { path: '/settings', label: 'Settings', icon: <SettingsIcon size={16} />, hint: 'Config' },
 ]
 
@@ -201,6 +203,7 @@ export function AppLayout() {
                 <Route path="/models" element={<Models />} />
                 <Route path="/status" element={<Status />} />
                 <Route path="/logs" element={<Logs />} />
+                <Route path="/auth" element={<Authentication />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>

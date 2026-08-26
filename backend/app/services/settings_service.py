@@ -32,6 +32,7 @@ _DEFAULTS: dict[str, SettingValue] = {
     "accounts_show_tokens": True,
     "accounts_show_requests": True,
     "accounts_auto_delete_exhausted": False,
+    "auth_enabled": False,
     "qoder_infer_base": "api3",
     "probe_interval_minutes": 15,
     "probe_model_keys": list(DEFAULT_PROBE_MODEL_KEYS),

@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
@@ -266,6 +267,7 @@ class AccountPool:
                     )
                     .execution_options(synchronize_session=False)
                 )
+                session.expire(acc, ["total_requests", "total_tokens"])
 
                 # Lifetime pool counter — survives account purges. Atomic
                 # upsert for the same reason as the per-account counters:
@@ -282,14 +284,41 @@ class AccountPool:
                         .execution_options(synchronize_session=False)
                     )
 
-                # Drain local quota estimate; keep used+remaining in sync so the bar matches.
-                if credits_used and acc.quota_remaining is not None:
-                    acc.quota_remaining = max(0.0, acc.quota_remaining - credits_used)
-                    if acc.quota_used is not None:
-                        acc.quota_used = acc.quota_used + credits_used
-                    if acc.quota_remaining <= 0:
-                        await self._park_exhausted(session, acc, "quota drained locally")
-                        return
+                # Drain local quota estimate atomically — the ORM
+                # read-modify-write used to lose decrements when fill-first
+                # routing ran two completions on the same account. Expire the
+                # columns afterwards so a later flush cannot overwrite the
+                # SQL result with the stale in-memory values.
+                drained = False
+                if credits_used:
+                    remaining_expr = Account.quota_remaining - float(credits_used)
+                    result = await session.execute(
+                        update(Account)
+                        .where(
+                            Account.id == account_id,
+                            Account.quota_remaining.is_not(None),
+                        )
+                        .values(
+                            quota_remaining=case(
+                                (remaining_expr < 0, 0.0),
+                                else_=remaining_expr,
+                            ),
+                            quota_used=func.coalesce(Account.quota_used, 0.0)
+                            + float(credits_used),
+                        )
+                        .returning(Account.quota_remaining)
+                        .execution_options(synchronize_session=False)
+                    )
+                    row = result.first()
+                    drained = row is not None and row[0] is not None and row[0] <= 0
+                    session.expire(acc, ["quota_remaining", "quota_used"])
+                    if drained:
+                        parked = await session.get(Account, account_id)
+                        if parked:
+                            await self._park_exhausted(
+                                session, parked, "quota drained locally"
+                            )
+                            return
 
                 await session.commit()
         except StaleDataError:
@@ -349,6 +378,12 @@ class AccountPool:
         self, session: AsyncSession, name: str, pat_token: str,
         priority: int = 0, model_level: str = "auto", default_model: str = "",
     ) -> Account:
+        existing = await session.execute(
+            select(Account.id).where(Account.pat_token == pat_token)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise ValueError("This PAT is already in the pool")
+
         account = Account(
             name=name,
             pat_token=pat_token,
@@ -360,7 +395,11 @@ class AccountPool:
             machine_id=str(uuid.uuid4()),
         )
         session.add(account)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise ValueError("This PAT is already in the pool")
         await session.refresh(account)
         await self._refresh()
         logbus.push("info", "pool", f"account added: {name} (id {account.id})", account_id=account.id, account_name=name)
@@ -382,6 +421,14 @@ class AccountPool:
         for key, value in kwargs.items():
             if value is not None and hasattr(acc, key):
                 if key == "pat_token":
+                    taken = await session.execute(
+                        select(Account.id).where(
+                            Account.pat_token == value,
+                            Account.id != account_id,
+                        )
+                    )
+                    if taken.scalar_one_or_none() is not None:
+                        raise ValueError("This PAT is already in the pool")
                     acc.pat_short = value[:12] + "..."
                 setattr(acc, key, value)
         await session.commit()

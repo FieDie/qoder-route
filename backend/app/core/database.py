@@ -27,9 +27,12 @@ async def init_db():
     from app.models.account import Account  # noqa
     from app.models.pool_counter import PoolCounter  # noqa
     from app.models.app_setting import AppSetting  # noqa
+    from app.models.api_key import ApiKey  # noqa
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_account_quota_columns(conn)
+        await _migrate_api_key_plain_column(conn)
+        await _ensure_pat_unique_index(conn)
         await _drop_legacy_activity_state(conn)
 
 
@@ -107,3 +110,35 @@ async def _drop_legacy_activity_state(conn):
         "WHERE key IN ('accounts_auto_delete_keep_activity', "
         "'account_activity_checks_enabled')"
     ))
+
+
+async def _ensure_pat_unique_index(conn):
+    """Unique PAT so the same token cannot enter the pool twice.
+
+    create_all will not add the index to an existing table; do it here.
+    Duplicate rows leftover from before this constraint are left as-is —
+    the index create fails and we log rather than wiping accounts.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError, OperationalError
+
+    try:
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_accounts_pat_token "
+            "ON accounts (pat_token)"
+        ))
+    except (OperationalError, IntegrityError):
+        import logging
+        logging.getLogger("qoderroute.db").warning(
+            "Could not create unique PAT index — duplicate tokens already exist"
+        )
+
+
+async def _migrate_api_key_plain_column(conn):
+    """Keep the generated key so the panel can copy it later."""
+    from sqlalchemy import text
+
+    result = await conn.execute(text("PRAGMA table_info(api_keys)"))
+    existing = {row[1] for row in result.fetchall()}
+    if existing and "key_plain" not in existing:
+        await conn.execute(text("ALTER TABLE api_keys ADD COLUMN key_plain TEXT"))
