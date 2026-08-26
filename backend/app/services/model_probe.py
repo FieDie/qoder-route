@@ -45,7 +45,7 @@ async def _probe_attempt(
     pat: str,
     display: str,
     level: str,
-    machine_id: Optional[str] = None,
+    machine_id: str,
 ) -> dict:
     started = time.time()
     tokens = 0
@@ -104,7 +104,7 @@ async def _probe_one(
     pat: str,
     display: str,
     level: str,
-    machine_id: Optional[str] = None,
+    machine_id: str,
 ) -> dict:
     """Probe once; retry a single flaky connection drop before declaring dead."""
     result = await _probe_attempt(pat, display, level, machine_id=machine_id)
@@ -129,8 +129,8 @@ async def probe_all() -> None:
             account = await pool.get_next_account(db)
             account_id = account.id if account else None
             pat = account.pat_token if account else None
-            machine_id = getattr(account, "machine_id", None) if account else None
-        if not account or account_id is None or not pat:
+            machine_id = (account.machine_id or "").strip() if account else ""
+        if not account or account_id is None or not pat or not machine_id:
             logger.warning("Model probe skipped: no available accounts")
             for display, level in probe_models:
                 _results[level] = {

@@ -41,9 +41,6 @@ INFER_ENDPOINT_CACHE = (
     / ".cache"
     / "endpoint-cache.json"
 )
-# Machine ID per-account (set by Account model). This is the fallback when an
-# old account has no machine_id yet; new accounts always get a random UUID.
-_MACHINE_ID_DEFAULT = "f0aef754-0595-447d-98bd-75b6a8a68804"
 QODER_INFER_USER_AGENT = "Bun/1.3.14"
 
 _signer_client: Optional[httpx.AsyncClient] = None
@@ -507,13 +504,18 @@ async def run_infer(
     context_window: Optional[int] = None,
     max_tokens: Optional[int] = None,
     session_id: Optional[str] = None,
-    machine_id: Optional[str] = None,
     tool_choice: Optional[object] = None,
+    *,
+    machine_id: str,
 ) -> AsyncGenerator[dict, None]:
     """Direct signed infer request. Yields events:
     {"type":"text"|"thinking"|"reasoning_item"|"reasoning_signature"|
             "tool_calls"|"function_call"|"done"|"error", ...}"""
     model_key = MODEL_KEY_MAP.get(model_level, "auto")
+    effective_machine_id = (machine_id or "").strip()
+    if not effective_machine_id:
+        yield {"type": "error", "message": "account machine_id is required"}
+        return
 
     jt = await get_job_token(pat)
     if not jt:
@@ -526,8 +528,6 @@ async def run_infer(
 
     supplied_session_id = normalize_session_id(session_id)
     resolved_session_id = supplied_session_id or str(uuid.uuid4())
-    # Use per-account machine_id when provided, else default (for backwards compat)
-    effective_machine_id = machine_id or _MACHINE_ID_DEFAULT
     body_json = _build_body(
         messages,
         model_key,

@@ -356,8 +356,8 @@ async def create_message(
                 None,
                 body.max_tokens,
                 session_id,
-                machine_id=getattr(account, "machine_id", None),
                 tool_choice=tool_choice,
+                machine_id=account.machine_id,
             )
 
         if body.stream:
