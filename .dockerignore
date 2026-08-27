@@ -1,0 +1,42 @@
+# ── secrets & local state: never bake into the image ──
+# SQLite DB, PAT tokens, logs, pidfiles
+backend/data/
+.env
+credentials.env
+
+# stale signer runtime files (recreated in the container on boot)
+backend/signer/signer.log
+backend/signer/signer.pid
+backend/signer/.start.lock
+
+# ── rebuilt inside the image ──
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+*.tsbuildinfo
+
+# ── not part of the shipped build ──
+backend/tests/
+backend/app/api/worker.py
+backend/app/services/worker_runner.py
+backend/app/services/worker_pool.py
+frontend/src/components/worker/
+
+# docs & repo assets not needed at runtime
+public/
+*.md
+
+# local smoke-test scratch dir
+.smoke-data/
+
+# ── vcs / editor / OS noise ──
+.git/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

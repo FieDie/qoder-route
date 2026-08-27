@@ -1,0 +1,36 @@
+# QoderRoute — one command to run everything.
+#
+#   first time:  docker compose up -d --build
+#   afterwards:  docker compose up -d            (start)
+#                docker compose down             (stop)
+#                docker compose logs -f          (follow logs)
+#                docker compose up -d --build    (rebuild after code changes)
+#
+# Panel + API endpoint:  http://localhost:8010
+
+services:
+  qoderroute:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # If Docker Hub is unreachable from your network, point these at a
+        # working mirror from your root .env file, e.g.:
+        #   DOCKER_NODE_IMAGE=docker.m.daocloud.io/library/node:22-bookworm-slim
+        #   DOCKER_PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm
+        NODE_IMAGE: ${DOCKER_NODE_IMAGE:-node:22-bookworm-slim}
+        PYTHON_IMAGE: ${DOCKER_PYTHON_IMAGE:-python:3.11-slim-bookworm}
+    image: qoderroute:latest
+    container_name: qoderroute
+    ports:
+      # Override the host side with QODERROUTE_PORT=9090 (env or root .env file).
+      - "${QODERROUTE_PORT:-8010}:8010"
+    volumes:
+      # SQLite database + runtime files survive rebuilds and restarts,
+      # and are interchangeable with a native ./start.sh deployment.
+      - ./backend/data:/app/backend/data
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8010
+      TZ: ${TZ:-Asia/Shanghai}
+    restart: unless-stopped

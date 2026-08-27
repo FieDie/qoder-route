@@ -170,6 +170,52 @@ Install test dependencies separately (pytest and pytest-asyncio):
 pip install pytest pytest-asyncio
 ```
 
+## Docker Deployment
+
+Run the whole stack in one container — no Python, Node.js or npm installation needed on the host.
+
+### Quick Start
+
+```bash
+docker compose up -d --build
+```
+
+The first build downloads base images and installs npm/pip dependencies (a few minutes); subsequent builds reuse the layer cache. Once the container reports healthy, open the panel at <http://localhost:8010>.
+
+Everyday commands:
+
+```bash
+docker compose logs -f         # follow server logs
+docker compose restart        # restart the stack
+docker compose down           # stop and remove the container
+docker compose up -d --build  # rebuild after pulling code changes
+```
+
+### What Runs Inside
+
+A single image carries all three pieces of the stack:
+
+| Component | How it runs |
+|-----------|-------------|
+| FastAPI backend | Uvicorn binding to `0.0.0.0:8010` |
+| WASM signer sidecar | Spawned automatically by the backend on `127.0.0.1:8123` (container-internal), using an official-build `node` binary shipped in the image |
+| Admin panel SPA | Built inside the image from `frontend/`, served by FastAPI with SPA fallback routing |
+
+The built-in healthcheck uses `/api/health`, so the container only reports healthy when both the app and the signer answer.
+
+### Data Persistence
+
+All state lives in one place: the `backend/data/` directory (SQLite database, logs, signer lock/pid files), bind-mounted into the container at `/app/backend/data`. Rebuilds and upgrades keep your accounts, settings, API keys and usage history; backing up is a plain directory copy.
+
+Two things to know:
+
+- The mount targets the same location the native setup (`./start.sh`) uses, so you can switch between Docker and native deployments freely — but don't run both at once: they would fight over port 8010 and the SQLite lock.
+- To use a different host port: `QODERROUTE_PORT=9090 docker compose up -d` (or set it in a root-level `.env` file). The port inside the container always stays 8010.
+
+### Security Notes
+
+Panel authentication (`auth_enabled` in Settings) defaults to **off**: every admin route under `/api/*` is open to whoever can reach port 8010. That is fine for local use, but if you expose the container beyond your own machine, enable authentication in the panel settings and create an API key first.
+
 ## Configuration
 
 Environment variables are loaded from `backend/.env` (pydantic-settings field mapping to UPPER_SNAKE_CASE). Common options:
