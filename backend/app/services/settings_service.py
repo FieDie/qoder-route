@@ -11,11 +11,8 @@ from sqlalchemy import select
 
 from app.core.database import async_session
 from app.models.app_setting import AppSetting
-from app.services.model_catalog import (
-    DEFAULT_PROBE_MODEL_KEYS,
-    MODEL_KEYS,
-    MODEL_KEYS_IN_ORDER,
-)
+from app.services import model_catalog
+from app.services.model_catalog import DEFAULT_PROBE_MODEL_KEYS
 
 logger = logging.getLogger("qoderroute.settings")
 
@@ -74,11 +71,11 @@ def _normalize_value(key: str, value: object) -> Optional[SettingValue]:
                 return None
         if not isinstance(candidate, (list, tuple)):
             return None
-        if not all(isinstance(item, str) and item in MODEL_KEYS for item in candidate):
+        if not all(isinstance(item, str) and item in model_catalog.model_keys() for item in candidate):
             return None
         selected = set(candidate)
         # Store in catalog order, deduped.  This keeps API/UI output stable.
-        return [key for key in MODEL_KEYS_IN_ORDER if key in selected]
+        return [key for key in model_catalog.model_keys_in_order() if key in selected]
     return None
 
 

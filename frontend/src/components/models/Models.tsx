@@ -1,8 +1,8 @@
 import { motion } from 'framer-motion'
-import { BrainCircuit, Coins, Eye, Layers3 } from 'lucide-react'
+import { BrainCircuit, Coins, Eye, Layers3, RefreshCw } from 'lucide-react'
 import { Card, EmptyState, HeaderBadge, Skeleton } from '../ui/GlassPanel'
-import { useModelCatalog } from '../../hooks/useApi'
-import { formatNumber } from '../../lib/utils'
+import { useModelCatalog, useModelSyncStatus, useSyncModelCatalog } from '../../hooks/useApi'
+import { formatNumber, timeAgo } from '../../lib/utils'
 import type { ModelCatalogEntry } from '../../types'
 
 const stagger = {
@@ -70,6 +70,9 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
 
 export function Models() {
   const { data, isLoading, isError } = useModelCatalog()
+  const syncStatus = useModelSyncStatus()
+  const sync = useSyncModelCatalog()
+  const syncedAt = syncStatus.data?.synced_at
 
   return (
     <motion.div variants={stagger} initial="hidden" animate="show" className="space-y-6">
@@ -78,7 +81,25 @@ export function Models() {
           <h1 className="text-[24px] font-bold text-white tracking-tight">Models</h1>
           <p className="text-sm text-neutral-500 mt-1">Qoder model keys, route capabilities and base credit multipliers</p>
         </div>
-        <HeaderBadge icon={<Layers3 size={11} />}>{data?.length ?? 0} models</HeaderBadge>
+        <div className="flex items-center gap-3">
+          {sync.isError && (
+            <span className="text-[11px] text-red-400/80">Sync failed</span>
+          )}
+          <span className="hidden sm:inline text-[11px] text-neutral-600">
+            {syncedAt ? `Synced ${timeAgo(new Date(syncedAt * 1000).toISOString())}` : 'Baseline catalog'}
+          </span>
+          <button
+            onClick={() => sync.mutate()}
+            disabled={sync.isPending}
+            title="Pull Qoder's live model catalog (prices, new models, thinking tiers)"
+            className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium text-neutral-200 transition hover:bg-white/10 disabled:opacity-50"
+            style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+          >
+            <RefreshCw size={11} className={sync.isPending ? 'animate-spin' : ''} />
+            {sync.isPending ? 'Syncing…' : 'Sync catalog'}
+          </button>
+          <HeaderBadge icon={<Layers3 size={11} />}>{data?.length ?? 0} models</HeaderBadge>
+        </div>
       </motion.div>
 
       {isLoading ? (

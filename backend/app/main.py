@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.api import accounts, chat, models, logs, settings as settings_api, status as status_api, anthropic, auth as auth_api
 from app.services.account_pool import pool
-from app.services import settings_service, signer_service, model_probe
+from app.services import settings_service, signer_service, model_probe, model_sync
 from app.core.auth import AuthMiddleware
 
 # Worker endpoints are optional — the public build ships without them.
@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
     await settings_service.load()
+    model_sync.load_synced()
 
     if not await signer_service.ensure_signer():
         raise RuntimeError(
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
     initial_task = asyncio.create_task(_initial_quota())
     refresher = asyncio.create_task(_quota_refresher())
     prober = asyncio.create_task(_model_prober())
+    catalog_task = asyncio.create_task(model_sync.sync_loop())
     try:
         yield
     finally:
@@ -89,11 +91,13 @@ async def lifespan(app: FastAPI):
         initial_task.cancel()
         signer_task.cancel()
         prober.cancel()
+        catalog_task.cancel()
         await asyncio.gather(
             refresher,
             initial_task,
             signer_task,
             prober,
+            catalog_task,
             return_exceptions=True,
         )
         # The signer is a host-level singleton.  It deliberately survives this

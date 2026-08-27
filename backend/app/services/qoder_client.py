@@ -9,7 +9,7 @@ from typing import AsyncGenerator, Optional
 import httpx
 
 from app.core.config import settings
-from app.services.model_catalog import MODEL_CATALOG
+from app.services import model_catalog
 
 logger = logging.getLogger("qoderroute.qoder")
 
@@ -17,23 +17,29 @@ def _model_slug(value: str) -> str:
     return value.lower().replace(" ", "-").replace("_", "-")
 
 
-QODER_MODEL_DISPLAY = [
-    (str(entry["name"]), str(entry["key"])) for entry in MODEL_CATALOG
-]
-QODER_MODEL_LEVELS = {
-    _model_slug(str(entry["name"])): str(entry["key"])
-    for entry in MODEL_CATALOG
-}
-# Keep the unversioned public aliases accepted after display names gain the
-# upstream build suffix.  OpenCode model IDs intentionally remain stable.
-QODER_MODEL_LEVELS.update({
+# Static aliases that must survive upstream display-name changes.
+_STATIC_MODEL_LEVEL_ALIASES = {
     "deepseek-v4-pro": "dmodel",
     "deepseek-v4-flash": "dfmodel",
-})
+}
 # Private compatibility key previously advertised for the preview tier.  It
 # is deliberately absent from the public catalog, but existing clients that
 # send the exact ID must keep reaching it instead of silently falling to auto.
 _LEGACY_MODEL_LEVELS = frozenset({"qmodel_preview"})
+
+
+def _display_levels() -> tuple[list[tuple[str, str]], dict[str, str]]:
+    """Display-name/level pairs and slug aliases for the live catalog."""
+    entries = model_catalog.effective_catalog()
+    display = [(str(entry["name"]), str(entry["key"])) for entry in entries]
+    levels = {_model_slug(str(entry["name"])): str(entry["key"]) for entry in entries}
+    levels.update(_STATIC_MODEL_LEVEL_ALIASES)
+    return display, levels
+
+
+def model_display_pairs() -> list[tuple[str, str]]:
+    """(display_name, level_key) pairs, mirrors /v1/models."""
+    return _display_levels()[0]
 
 QODER_JOB_TOKEN_EXCHANGE_URL = "https://openapi.qoder.sh/api/v1/jobToken/exchange"
 
@@ -47,14 +53,15 @@ def resolve_model_level(model: str) -> str:
     if "/" in model:
         model = model.rsplit("/", 1)[-1]
     raw_key = model.strip().lower()
-    known_levels = {level for _, level in QODER_MODEL_DISPLAY} | _LEGACY_MODEL_LEVELS
+    display, levels = _display_levels()
+    known_levels = {level for _, level in display} | _LEGACY_MODEL_LEVELS
     if raw_key in known_levels:
         return raw_key
 
     key = raw_key.replace(" ", "-").replace("_", "-")
-    if key in QODER_MODEL_LEVELS:
-        return QODER_MODEL_LEVELS[key]
-    for display_name, level in QODER_MODEL_DISPLAY:
+    if key in levels:
+        return levels[key]
+    for display_name, level in display:
         if (
             display_name.lower().replace(" ", "-") == key
             or level.lower().replace("_", "-") == key

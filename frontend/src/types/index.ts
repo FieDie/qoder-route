@@ -75,6 +75,17 @@ export interface ModelCatalogEntry {
   kind: 'tier' | 'model'
 }
 
+export interface ModelSyncStatus {
+  ok: boolean
+  synced_at: number | null
+  model_count: number
+}
+
+export interface ModelSyncResult extends ModelSyncStatus {
+  added?: number
+  updated?: number
+}
+
 export interface WorkerQueueItem {
   pat_short: string
   retry_allow: boolean

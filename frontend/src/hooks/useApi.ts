@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Account, AccountPoolStatus, ActivityStats, AppSettings, CreatedPanelApiKey, DashboardStats, ModelCatalogEntry, ModelEntry, ModelStatusSnapshot, PanelApiKey, WorkerStatus } from '../types'
+import type { Account, AccountPoolStatus, ActivityStats, AppSettings, CreatedPanelApiKey, DashboardStats, ModelCatalogEntry, ModelEntry, ModelStatusSnapshot, ModelSyncResult, ModelSyncStatus, PanelApiKey, WorkerStatus } from '../types'
 import { authHeaders, notifyUnauthorized } from '../lib/apiKey'
 
 const BASE = ''
@@ -93,6 +93,25 @@ export function useModelCatalog() {
     queryKey: ['model-catalog'],
     queryFn: () => api('/api/models/catalog'),
     staleTime: 300000,
+  })
+}
+
+export function useModelSyncStatus() {
+  return useQuery<ModelSyncStatus>({
+    queryKey: ['model-sync-status'],
+    queryFn: () => api('/api/models/sync'),
+    staleTime: 60000,
+  })
+}
+
+export function useSyncModelCatalog() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api<ModelSyncResult>('/api/models/sync', { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['model-catalog'] })
+      qc.invalidateQueries({ queryKey: ['model-sync-status'] })
+    },
   })
 }
 

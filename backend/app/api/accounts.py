@@ -13,7 +13,7 @@ from app.models.schemas import (
 )
 from app.models.account import Account
 from app.services.account_pool import pool
-from app.services.qoder_client import validate_pat, QODER_MODEL_DISPLAY
+from app.services.qoder_client import validate_pat, model_display_pairs
 from app.services.model_catalog import public_model_catalog
 from app.services import logbus
 from app.services import quota_service
@@ -105,7 +105,7 @@ async def dashboard_activity():
         slot["tokens"] += tokens
         slot["credits"] += credits
 
-    display = {key: name for name, key in QODER_MODEL_DISPLAY}
+    display = {key: name for name, key in model_display_pairs()}
     models = sorted(by_model.values(), key=lambda m: m["requests"], reverse=True)
     for m in models:
         m["display"] = display.get(m["model"], m["model"])

@@ -12,9 +12,8 @@ import time
 from typing import Optional
 
 from app.core.database import async_session
-from app.services import direct_client, logbus, settings_service
+from app.services import direct_client, logbus, model_catalog, settings_service
 from app.services.account_pool import pool
-from app.services.model_catalog import MODEL_CATALOG
 from app.services.quota_service import (
     looks_like_transient_stream_error,
     looks_like_model_queue,
@@ -36,7 +35,7 @@ def _probe_models() -> list[tuple[str, str]]:
     selected = set(settings_service.get_probe_model_keys())
     return [
         (str(entry["name"]), str(entry["key"]))
-        for entry in MODEL_CATALOG
+        for entry in model_catalog.effective_catalog()
         if entry["key"] in selected
     ]
 

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from app.services import settings_service
 from app.services import api_key_service
-from app.services.model_catalog import MODEL_KEYS
+from app.services import model_catalog
 from app.services.settings_service import PROBE_INTERVALS
 
 logger = logging.getLogger("qoderroute.api.settings")
@@ -47,7 +47,7 @@ async def update_settings(body: SettingsUpdate):
             detail=f"probe_interval_minutes must be one of {list(PROBE_INTERVALS)}",
         )
     if "probe_model_keys" in values:
-        unknown = sorted(set(values["probe_model_keys"]) - MODEL_KEYS)
+        unknown = sorted(set(values["probe_model_keys"]) - model_catalog.model_keys())
         if unknown:
             raise HTTPException(
                 status_code=400,
