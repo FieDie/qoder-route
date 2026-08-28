@@ -203,8 +203,11 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 - **Model Probes Spend Real Credits**
   `probe_model_keys` controls exactly which routes are probed. The safe default is the named catalog models, including Qwen3.8-Flash (`qfmodel`) and GLM-5.3-Flash (`gfmodel`); Cantus (`3.2×`) and generic tiers are opt-in. An empty list is valid and probes nothing. Selection changes apply on the next cycle, and stale status results for deselected models are filtered from the API snapshot.
 
-- **Qwen3.8 Reasoning Effort Mapping**  
-  For `qmodel_38max` and `qfmodel`, the strongest supported effort enum is `xhigh`, not `max`. The native-compatible body currently relies on the catalog default and deliberately omits explicit `reasoning_effort` / `enable_thinking` switches for these models because that provider route rejected them. `_MAX_REASONING_EFFORT_BY_MODEL` still represents the effective effort used by diagnostics. Custom request builders must never send `max` for these keys.
+- **Reasoning Effort Defaults**  
+  `_normalize_effort` defaults to the model peak (`max`, or `xhigh` for `qmodel_38max` / `qfmodel`) only when the OpenAI client omits `reasoning_effort`. An explicit client value is honored as-is; bare `max` on the Qwen3.8 routes is rewritten to `xhigh`. For those two keys, explicit `reasoning_effort` / `enable_thinking` are still omitted from the upstream body when the client did not send an effort, because that provider rejects inventing the switches.
+
+- **Account Name Defaults From Userinfo**  
+  `POST /api/accounts` accepts an optional `name`. If omitted or blank, `quota_service.resolve_account_name` uses `/api/v1/userinfo` (`name` / `username` / `user_name`, same keys as the CLI credential record), then email, then `"account"`.
 
 - **Context Window Parameter Placement**  
   The `context_length` parameter inside the request body sets the reservation; putting the same value in `model_config.context_window` has no effect on the inference path. Use only `parameters.context_length`.

@@ -249,7 +249,13 @@ export function AccountManager() {
 
   const handleAdd = async () => {
     try {
-      await addAccount.mutateAsync({ ...addForm, model_level: 'auto' })
+      const trimmedName = addForm.name.trim()
+      await addAccount.mutateAsync({
+        ...(trimmedName ? { name: trimmedName } : {}),
+        pat_token: addForm.pat_token,
+        priority: addForm.priority,
+        model_level: 'auto',
+      })
       setShowAdd(false)
       setAddForm({ name: '', pat_token: '', priority: 0 })
     } catch {
@@ -416,10 +422,10 @@ export function AccountManager() {
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add Account" subtitle="Token is validated against Qoder before saving">
         <div className="space-y-4">
           <div>
-            <label className="label">Account name</label>
+            <label className="label">Account name <span className="text-neutral-600 font-normal">(optional)</span></label>
             <input
               className="input"
-              placeholder="e.g. production-main"
+              placeholder="Leave empty to use the Qoder profile name"
               value={addForm.name}
               onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
             />
@@ -473,7 +479,7 @@ export function AccountManager() {
             <button onClick={() => setShowAdd(false)} className="btn-ghost flex-1">Cancel</button>
             <button
               onClick={handleAdd}
-              disabled={!addForm.name || !addForm.pat_token || addAccount.isPending}
+              disabled={!addForm.pat_token.trim() || addAccount.isPending}
               className="btn-primary flex-1"
             >
               {addAccount.isPending ? (

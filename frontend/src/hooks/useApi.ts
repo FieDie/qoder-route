@@ -99,7 +99,7 @@ export function useModelCatalog() {
 export function useAddAccount() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: { name: string; pat_token: string; priority: number; model_level: string }) =>
+    mutationFn: (data: { name?: string; pat_token: string; priority: number; model_level: string }) =>
       api<Account>('/api/accounts', { method: 'POST', body: JSON.stringify(data) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['pool-status'] })

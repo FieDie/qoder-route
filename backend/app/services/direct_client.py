@@ -112,9 +112,13 @@ _MAX_REASONING_EFFORT_BY_MODEL = {
     "qmodel_38max": "xhigh",
     "qfmodel": "xhigh",
 }
+_VALID_REASONING_EFFORTS = frozenset({
+    "none", "minimal", "low", "medium", "high", "xhigh", "max",
+})
 # Qwen3.8 Max/Flash enable thinking through catalog defaults.  Their
 # provider rejects the generic explicit thinking switches used by the
-# other Qoder models, so native requests omit both fields.
+# other Qoder models, so native requests omit both fields when the
+# client did not send an explicit effort.
 _OMIT_EXPLICIT_THINKING_SWITCHES = frozenset({"qmodel_38max", "qfmodel"})
 # Capability from Qoder's model catalog.  Kimi/Auto can emit opportunistic
 # reasoning, but the CLI still declares them as non-reasoning models and uses
@@ -177,8 +181,25 @@ def _resolve_infer_base() -> str:
 
 
 def _normalize_effort(effort: Optional[str], model_key: str) -> str:
-    """Use the strongest effort name accepted by the selected model."""
-    return _MAX_REASONING_EFFORT_BY_MODEL.get(model_key, "max")
+    """Honor an explicit client effort; otherwise use the model peak.
+
+    Missing / blank / unknown values default to ``max`` (or ``xhigh`` for
+    Qwen3.8 Max/Flash).  A bare client ``max`` on those Qwen routes is
+    rewritten to ``xhigh`` because that provider rejects ``max``.
+    """
+    max_effort = _MAX_REASONING_EFFORT_BY_MODEL.get(model_key, "max")
+    if not isinstance(effort, str) or not effort.strip():
+        return max_effort
+    normalized = effort.strip().lower()
+    if normalized not in _VALID_REASONING_EFFORTS:
+        return max_effort
+    if model_key in _MAX_REASONING_EFFORT_BY_MODEL and normalized == "max":
+        return max_effort
+    return normalized
+
+
+def _client_sent_effort(effort: Optional[str]) -> bool:
+    return isinstance(effort, str) and bool(effort.strip())
 
 
 def _extract_queue_payload(text: str) -> Optional[str]:
@@ -320,9 +341,13 @@ def _build_body(messages: list[dict], model_key: str, tools: Optional[list[dict]
         "context_length": context_window,
     }
     # Qwen3.8 enables thinking through its catalog default.  Its provider
-    # rejects the generic explicit thinking switches even though other Qoder
-    # models accept them, so mirror the native request and omit both fields.
-    if model_key not in _OMIT_EXPLICIT_THINKING_SWITCHES:
+    # rejects the generic explicit thinking switches when we invent a
+    # default, so omit both fields unless the client sent an effort.
+    omit_thinking_switches = (
+        model_key in _OMIT_EXPLICIT_THINKING_SWITCHES
+        and not _client_sent_effort(reasoning_effort)
+    )
+    if not omit_thinking_switches:
         parameters["reasoning_effort"] = effort
         if thinking_enabled:
             # The native CLI derives the budget from reasoning_effort.  Sending

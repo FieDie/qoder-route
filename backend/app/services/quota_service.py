@@ -171,11 +171,46 @@ async def fetch_plan_quota(pat: str) -> Optional[dict]:
             )
             if userinfo and userinfo.get("email"):
                 result["email"] = str(userinfo["email"])
+            account_name = display_name_from_userinfo(userinfo)
+            if account_name:
+                result["account_name"] = account_name
             result["quota_fetched_at"] = time.time()
             return result
     except Exception as e:
         logger.warning(f"fetch_plan_quota error: {e}")
         return None
+
+
+def _first_str(obj: dict, keys: tuple[str, ...]) -> Optional[str]:
+    for key in keys:
+        val = obj.get(key)
+        if isinstance(val, str):
+            stripped = val.strip()
+            if stripped:
+                return stripped
+    return None
+
+
+def display_name_from_userinfo(userinfo: Optional[dict]) -> Optional[str]:
+    """Qoder profile name from /api/v1/userinfo — same keys as the CLI credential record."""
+    if not isinstance(userinfo, dict):
+        return None
+    name = _first_str(userinfo, ("name", "username", "user_name"))
+    return name[:128] if name else None
+
+
+def resolve_account_name(explicit: Optional[str], plan_quota: Optional[dict] = None) -> str:
+    """Prefer a caller-supplied label; otherwise the Qoder profile name, then email."""
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()[:128]
+    if isinstance(plan_quota, dict):
+        from_info = plan_quota.get("account_name")
+        if isinstance(from_info, str) and from_info.strip():
+            return from_info.strip()[:128]
+        email = plan_quota.get("email")
+        if isinstance(email, str) and email.strip():
+            return email.strip()[:128]
+    return "account"
 
 
 # Paid tiers are indistinguishable in the plan endpoint payload — the only

@@ -6,7 +6,7 @@ from typing import Optional
 # ── Account ──
 
 class AccountCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=128)
+    name: Optional[str] = Field(None, max_length=128)
     pat_token: str = Field(..., min_length=1)
     priority: int = 0
     model_level: str = "auto"

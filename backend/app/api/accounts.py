@@ -243,7 +243,7 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
     try:
         account = await pool.add_account(
             db,
-            name=body.name,
+            name=quota_service.resolve_account_name(body.name, pq),
             pat_token=body.pat_token,
             priority=body.priority,
             model_level=body.model_level,
