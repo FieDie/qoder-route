@@ -209,6 +209,9 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 - **Account Name Defaults From Userinfo**  
   `POST /api/accounts` accepts an optional `name`. If omitted or blank, `quota_service.resolve_account_name` uses `/api/v1/userinfo` (`name` / `username` / `user_name`, same keys as the CLI credential record), then email, then `"account"`.
 
+- **No Per-Account Disable**  
+  Accounts cannot be toggled inactive from the UI or `AccountUpdate`. Startup backfill forces `is_active = 1` for any legacy disabled rows; the column remains only so existing pool filters keep working.
+
 - **Context Window Parameter Placement**  
   The `context_length` parameter inside the request body sets the reservation; putting the same value in `model_config.context_window` has no effect on the inference path. Use only `parameters.context_length`.
 

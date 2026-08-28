@@ -16,7 +16,6 @@ class AccountCreate(BaseModel):
 class AccountUpdate(BaseModel):
     name: Optional[str] = None
     pat_token: Optional[str] = None
-    is_active: Optional[bool] = None
     priority: Optional[int] = None
     model_level: Optional[str] = None
     default_model: Optional[str] = None

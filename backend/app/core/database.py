@@ -34,6 +34,7 @@ async def init_db():
         await _migrate_api_key_plain_column(conn)
         await _ensure_pat_unique_index(conn)
         await _drop_legacy_activity_state(conn)
+        await _reactivate_all_accounts(conn)
 
 
 async def _migrate_account_quota_columns(conn):
@@ -79,6 +80,13 @@ async def _backfill_machine_ids(conn):
         await conn.execute(text(
             "UPDATE accounts SET machine_id = :mid WHERE id = :aid"),
             {"mid": str(uuid.uuid4()), "aid": account_id})
+
+
+async def _reactivate_all_accounts(conn):
+    """Account disable was removed — wake any rows left inactive in the DB."""
+    from sqlalchemy import text
+
+    await conn.execute(text("UPDATE accounts SET is_active = 1 WHERE is_active = 0"))
 
 
 async def _drop_legacy_activity_state(conn):

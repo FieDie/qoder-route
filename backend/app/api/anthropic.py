@@ -542,7 +542,7 @@ async def create_message(
     return _anthropic_error(
         503,
         "api_error",
-        "No available accounts. All accounts are exhausted, in cooldown, or inactive.",
+        "No available accounts. All accounts are exhausted or in cooldown.",
     )
 
 

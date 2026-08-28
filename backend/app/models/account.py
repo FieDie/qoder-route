@@ -17,6 +17,7 @@ class Account(Base):
     # Nullable for backwards compat; backfilled at startup for legacy rows.
     machine_id = Column(String(36), nullable=True, default=lambda: str(uuid.uuid4()))
 
+    # Always true — per-account disable was removed; kept for pool filters / legacy rows.
     is_active = Column(Boolean, default=True, nullable=False)
     is_available = Column(Boolean, default=True, nullable=False)
     priority = Column(Integer, default=0, nullable=False)

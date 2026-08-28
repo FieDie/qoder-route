@@ -419,6 +419,9 @@ class AccountPool:
         if not acc:
             return None
         for key, value in kwargs.items():
+            # Disable/enable was removed — is_active stays true via startup backfill.
+            if key == "is_active":
+                continue
             if value is not None and hasattr(acc, key):
                 if key == "pat_token":
                     taken = await session.execute(

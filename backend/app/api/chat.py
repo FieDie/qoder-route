@@ -379,7 +379,7 @@ async def chat_completions(
 
     raise HTTPException(
         status_code=503,
-        detail="No available accounts. All accounts are exhausted, in cooldown, or inactive.",
+        detail="No available accounts. All accounts are exhausted or in cooldown.",
     )
 
 

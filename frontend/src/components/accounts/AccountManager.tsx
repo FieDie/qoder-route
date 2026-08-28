@@ -1,10 +1,10 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { usePoolStatus, useAddAccount, useDeleteAccount, useUpdateAccount, useRefreshQuota, fetchAccountPat, useSettings, useAvailableAccounts, useExhaustedAccounts } from '../../hooks/useApi'
+import { usePoolStatus, useAddAccount, useDeleteAccount, useRefreshQuota, fetchAccountPat, useSettings, useAvailableAccounts, useExhaustedAccounts } from '../../hooks/useApi'
 import { StatusBadge, Card, Modal, Skeleton, EmptyState } from '../ui/GlassPanel'
 import { timeAgo, planEndInfo } from '../../lib/utils'
-import { Plus, Trash2, Power, PowerOff, KeyRound, Activity, ArrowUpRight, RefreshCw, Crown, Copy, Check, Wallet, WalletMinimal, CalendarClock } from 'lucide-react'
+import { Plus, Trash2, KeyRound, Activity, ArrowUpRight, RefreshCw, Crown, Copy, Check, Wallet, WalletMinimal, CalendarClock } from 'lucide-react'
 import type { Account } from '../../types'
 
 const stagger = {
@@ -16,8 +16,7 @@ const rise = {
   show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.22, 1, 0.36, 1] } },
 }
 
-function getStatus(acc: Account): 'active' | 'error' | 'inactive' {
-  if (!acc.is_active) return 'inactive'
+function getStatus(acc: Account): 'active' | 'error' {
   if (acc.is_quota_exceeded) return 'error'
   if (acc.consecutive_failures >= 3) return 'error'
   if (acc.last_error_message) return 'error'
@@ -126,12 +125,12 @@ function CopyPatButton({ accountId }: { accountId: number }) {
   )
 }
 
-function AccountCard({ acc, onToggle, onDelete, onRefreshQuota, quotaRefreshing, showEmail, showTokens, showRequests }: {
+function AccountCard({ acc, onDelete, onRefreshQuota, quotaRefreshing, quotaRefreshed, showEmail, showTokens, showRequests }: {
   acc: Account
-  onToggle: () => void
   onDelete: () => void
   onRefreshQuota: () => void
   quotaRefreshing: boolean
+  quotaRefreshed: boolean
   showEmail: boolean
   showTokens: boolean
   showRequests: boolean
@@ -169,12 +168,24 @@ function AccountCard({ acc, onToggle, onDelete, onRefreshQuota, quotaRefreshing,
             </div>
           </div>
 
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-            <button onClick={onRefreshQuota} disabled={quotaRefreshing} className="icon-btn" title="Refresh quota">
-              <RefreshCw size={14} className={quotaRefreshing ? 'animate-spin' : ''} />
-            </button>
-            <button onClick={onToggle} className="icon-btn" title={acc.is_active ? 'Disable' : 'Enable'}>
-              {acc.is_active ? <Power size={14} /> : <PowerOff size={14} />}
+          <div
+            className={`flex items-center gap-1 transition-opacity duration-200 ${
+              quotaRefreshing || quotaRefreshed
+                ? 'opacity-100'
+                : 'opacity-0 group-hover:opacity-100'
+            }`}
+          >
+            <button
+              onClick={onRefreshQuota}
+              disabled={quotaRefreshing}
+              className="icon-btn"
+              title={quotaRefreshed ? 'Quota refreshed' : 'Refresh quota'}
+            >
+              {quotaRefreshed ? (
+                <Check size={14} className="text-white" />
+              ) : (
+                <RefreshCw size={14} className={quotaRefreshing ? 'animate-spin' : ''} />
+              )}
             </button>
             <button onClick={onDelete} className="icon-btn" title="Remove">
               <Trash2 size={14} />
@@ -226,7 +237,6 @@ export function AccountManager() {
   const { data: appSettings } = useSettings()
   const addAccount = useAddAccount()
   const deleteAccount = useDeleteAccount()
-  const updateAccount = useUpdateAccount()
   const refreshQuota = useRefreshQuota()
   
   // Use dedicated endpoints for filtered views
@@ -236,6 +246,8 @@ export function AccountManager() {
   const [showAdd, setShowAdd] = useState(false)
   const [addForm, setAddForm] = useState({ name: '', pat_token: '', priority: 0 })
   const [quotaRefreshingId, setQuotaRefreshingId] = useState<number | null>(null)
+  const [quotaRefreshedId, setQuotaRefreshedId] = useState<number | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<Account | null>(null)
 
   // Tab state lives in the URL — survives page refresh
   const { tab } = useParams<{ tab: string }>()
@@ -265,12 +277,27 @@ export function AccountManager() {
 
   const handleRefreshQuota = async (id: number) => {
     setQuotaRefreshingId(id)
+    setQuotaRefreshedId((cur) => (cur === id ? null : cur))
     try {
       await refreshQuota.mutateAsync(id)
+      setQuotaRefreshedId(id)
+      window.setTimeout(() => {
+        setQuotaRefreshedId((cur) => (cur === id ? null : cur))
+      }, 3000)
     } catch {
       /* mutation error state handles display */
     } finally {
       setQuotaRefreshingId(null)
+    }
+  }
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete) return
+    try {
+      await deleteAccount.mutateAsync(pendingDelete.id)
+      setPendingDelete(null)
+    } catch {
+      /* keep modal open; error surfaces below */
     }
   }
 
@@ -406,17 +433,73 @@ export function AccountManager() {
                 key={acc.id}
                 acc={acc}
                 quotaRefreshing={quotaRefreshingId === acc.id}
+                quotaRefreshed={quotaRefreshedId === acc.id}
                 showEmail={appSettings?.accounts_show_email ?? true}
                 showTokens={appSettings?.accounts_show_tokens ?? true}
                 showRequests={appSettings?.accounts_show_requests ?? true}
-                onToggle={() => updateAccount.mutate({ id: acc.id, is_active: !acc.is_active })}
-                onDelete={() => deleteAccount.mutate(acc.id)}
+                onDelete={() => setPendingDelete(acc)}
                 onRefreshQuota={() => handleRefreshQuota(acc.id)}
               />
             ))}
           </AnimatePresence>
         </motion.div>
       )}
+
+      {/* Remove confirm */}
+      <Modal
+        open={!!pendingDelete}
+        onClose={() => !deleteAccount.isPending && setPendingDelete(null)}
+        title="Remove account"
+        subtitle="This removes the account from the pool. The Qoder PAT itself is not revoked."
+      >
+        <div className="space-y-4">
+          {pendingDelete && (
+            <div
+              className="px-3 py-2.5 rounded-lg text-xs text-neutral-300"
+              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)' }}
+            >
+              <div className="font-medium text-white truncate">{pendingDelete.name}</div>
+              <div className="font-mono text-neutral-500 mt-0.5 truncate">{pendingDelete.pat_short}</div>
+              {pendingDelete.email && (
+                <div className="text-neutral-600 mt-0.5 truncate">{pendingDelete.email}</div>
+              )}
+            </div>
+          )}
+
+          {deleteAccount.isError && (
+            <div
+              className="px-3 py-2.5 rounded-lg text-xs text-red-300"
+              style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)' }}
+            >
+              {deleteAccount.error.message}
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <button
+              onClick={() => setPendingDelete(null)}
+              disabled={deleteAccount.isPending}
+              className="btn-ghost flex-1"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirmDelete}
+              disabled={deleteAccount.isPending}
+              className="btn-danger flex-1"
+            >
+              {deleteAccount.isPending ? (
+                <>
+                  <span className="w-3.5 h-3.5 rounded-full border-2 border-white/20 border-t-white animate-spin" />
+                  Removing…
+                </>
+              ) : (
+                'Remove'
+              )}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Add modal */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add Account" subtitle="Token is validated against Qoder before saving">

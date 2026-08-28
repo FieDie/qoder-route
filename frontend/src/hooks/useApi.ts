@@ -119,7 +119,7 @@ export function useAddAccount() {
 export function useUpdateAccount() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...data }: { id: number; name?: string; is_active?: boolean; priority?: number; model_level?: string }) =>
+    mutationFn: ({ id, ...data }: { id: number; name?: string; priority?: number; model_level?: string }) =>
       api<Account>(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['pool-status'] })
