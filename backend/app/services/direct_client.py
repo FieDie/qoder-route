@@ -108,7 +108,14 @@ _MODEL_CONFIG_DETAILS: dict[str, dict[str, Any]] = {
 # Qwen3.8-Max calls its strongest catalog effort ``xhigh``.  Sending the
 # generic ``max`` value used by the other models is outside its advertised
 # enum and can make the inference gateway reject an otherwise valid request.
-_MAX_REASONING_EFFORT_BY_MODEL = {"qmodel_38max": "xhigh"}
+_MAX_REASONING_EFFORT_BY_MODEL = {
+    "qmodel_38max": "xhigh",
+    "qfmodel": "xhigh",
+}
+# Qwen3.8 Max/Flash enable thinking through catalog defaults.  Their
+# provider rejects the generic explicit thinking switches used by the
+# other Qoder models, so native requests omit both fields.
+_OMIT_EXPLICIT_THINKING_SWITCHES = frozenset({"qmodel_38max", "qfmodel"})
 # Capability from Qoder's model catalog.  Kimi/Auto can emit opportunistic
 # reasoning, but the CLI still declares them as non-reasoning models and uses
 # parameters.enable_thinking as a separate best-effort switch.
@@ -315,7 +322,7 @@ def _build_body(messages: list[dict], model_key: str, tools: Optional[list[dict]
     # Qwen3.8 enables thinking through its catalog default.  Its provider
     # rejects the generic explicit thinking switches even though other Qoder
     # models accept them, so mirror the native request and omit both fields.
-    if model_key != "qmodel_38max":
+    if model_key not in _OMIT_EXPLICIT_THINKING_SWITCHES:
         parameters["reasoning_effort"] = effort
         if thinking_enabled:
             # The native CLI derives the budget from reasoning_effort.  Sending

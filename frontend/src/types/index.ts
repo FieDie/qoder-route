@@ -72,6 +72,7 @@ export interface ModelCatalogEntry {
   is_vision: boolean
   max_input_tokens: number
   context_windows: number[]
+  context_length: number
   kind: 'tier' | 'model'
 }
 

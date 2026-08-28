@@ -29,6 +29,11 @@ QODER_MODEL_LEVELS = {
 QODER_MODEL_LEVELS.update({
     "deepseek-v4-pro": "dmodel",
     "deepseek-v4-flash": "dfmodel",
+    "qwen3.8-flash": "qfmodel",
+    "glm-5.3-flash": "gfmodel",
+    # Retired GLM-5.2 key; keep old clients on the remaining GLM route.
+    "glm-5.2": "gmodel",
+    "gm51model": "gmodel",
 })
 # Private compatibility key previously advertised for the preview tier.  It
 # is deliberately absent from the public catalog, but existing clients that

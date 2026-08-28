@@ -38,7 +38,7 @@ QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qod
   When enabled, accounts marked as quota-exceeded are removed from the pool.
 
 - **OpenAI-Compatible API**  
-  The `/v1/chat/completions` endpoint accepts standard OpenAI request fields (messages, tools, reasoning_effort, context_window, max_tokens, etc.) and returns streaming SSE chunks matching the OpenAI response shape. `/v1/models` lists canonical model IDs, display names, and Qoder base credit factors.
+  The `/v1/chat/completions` endpoint accepts standard OpenAI request fields (messages, tools, reasoning_effort, context_window, max_tokens, etc.) and returns streaming SSE chunks matching the OpenAI response shape. `/v1/models` lists canonical model IDs, display names, credit factors, context windows, and Reasoning/Vision flags.
 
 - **Anthropic-Compatible API**  
   The `/v1/messages` endpoint speaks the Anthropic Messages API natively — block-based content (text / thinking / tool_use / tool_result / image), `input_schema` tools, and named SSE events (`message_start`, `content_block_delta`, `message_delta`, ...) — so clients like Claude Code or any anthropic-sdk tool work without an adapter. Claude model-name hints map onto Qoder tiers (`opus` → Ultimate, `sonnet` → Performance, `haiku` → Efficient); usage (`input_tokens` / `output_tokens`) is reported in both streaming and non-streaming responses and counts toward the same Usage charts and account quotas as OpenAI traffic.
@@ -58,14 +58,15 @@ Credit values are base multipliers mirrored from Qoder's catalog, not fixed per-
 | Lite | `lite` | 0× / free | No | No |
 | Cantus | `cmodel` | 3.2× | Yes | Yes |
 | Qwen3.8-Max | `qmodel_38max` | 0.5× | Yes | Yes |
+| Qwen3.8-Flash | `qfmodel` | 0.1× | Yes | Yes |
 | Qwen3.7-Max | `qmodel_latest` | 0.5× | No | Yes |
 | Qwen3.7-Plus | `qmodel` | 0.1× | No | Yes |
 | Kimi-K3 | `kmodel_latest` | 0.8× | No | Yes (`low` / `high` / `max`) |
 | Kimi-K2.7-Code | `kmodel` | 0.3× | No | No |
 | GLM-5.3 | `gmodel` | 0.6× | Yes | Yes (`low` / `high` / `max`) |
-| GLM-5.2 | `gm51model` | 0.6× | Yes | Yes |
-| DeepSeek V4 Pro 0813 | `dmodel` | 0.5× | Yes | Yes |
-| DeepSeek V4 Flash 0731 | `dfmodel` | 0.1× | Yes | Yes |
+| GLM-5.3-Flash | `gfmodel` | 0.05× | Yes | Yes |
+| DeepSeek-V4-Pro | `dmodel` | 0.8× | Yes | Yes |
+| DeepSeek-V4-Flash | `dfmodel` | 0.3× | Yes | Yes |
 | MiniMax-M3 | `mmodel` | 0.2× | No | No |
 
 ## Architecture
@@ -206,7 +207,7 @@ Settings managed via `/api/settings` (stored in DB):
 **OpenAI-Compatible Endpoints**
 
 - `POST /v1/chat/completions` — Chat completion (streaming SSE or JSON). Request schema follows `ChatCompletionRequest`. Accepts messages, tools, reasoning_effort, fast mode, context_window, max_tokens.
-- `GET /v1/models` — List supported canonical model IDs with display names and `credit_factor`.
+- `GET /v1/models` — List supported canonical model IDs with display names, `credit_factor`, `context_length` / `context_windows`, and `is_reasoning` / `is_vision`.
 
 **Anthropic-Compatible Endpoints**
 

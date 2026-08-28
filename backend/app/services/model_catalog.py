@@ -17,14 +17,15 @@ MODEL_CATALOG: tuple[dict[str, Any], ...] = (
     {"key": "lite", "name": "Lite", "credit_factor": 0.0, "is_reasoning": False, "is_vision": False, "max_input_tokens": 180_000, "context_windows": [], "probe_default": False, "kind": "tier"},
     {"key": "cmodel", "name": "Cantus", "credit_factor": 3.2, "is_reasoning": True, "is_vision": True, "max_input_tokens": 180_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": False, "kind": "model"},
     {"key": "qmodel_38max", "name": "Qwen3.8-Max", "credit_factor": 0.5, "is_reasoning": True, "is_vision": True, "max_input_tokens": 180_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
+    {"key": "qfmodel", "name": "Qwen3.8-Flash", "credit_factor": 0.1, "is_reasoning": True, "is_vision": True, "max_input_tokens": 180_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
     {"key": "qmodel_latest", "name": "Qwen3.7-Max", "credit_factor": 0.5, "is_reasoning": False, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
     {"key": "qmodel", "name": "Qwen3.7-Plus", "credit_factor": 0.1, "is_reasoning": False, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
     {"key": "kmodel_latest", "name": "Kimi-K3", "credit_factor": 0.8, "is_reasoning": False, "is_vision": True, "max_input_tokens": 180_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
     {"key": "kmodel", "name": "Kimi-K2.7-Code", "credit_factor": 0.3, "is_reasoning": False, "is_vision": True, "max_input_tokens": 256_000, "context_windows": [256_000], "probe_default": True, "kind": "model"},
     {"key": "gmodel", "name": "GLM-5.3", "credit_factor": 0.6, "is_reasoning": True, "is_vision": True, "max_input_tokens": 180_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
-    {"key": "gm51model", "name": "GLM-5.2", "credit_factor": 0.6, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
-    {"key": "dmodel", "name": "DeepSeek V4 Pro 0813", "credit_factor": 0.5, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
-    {"key": "dfmodel", "name": "DeepSeek V4 Flash 0731", "credit_factor": 0.1, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
+    {"key": "gfmodel", "name": "GLM-5.3-Flash", "credit_factor": 0.05, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
+    {"key": "dmodel", "name": "DeepSeek-V4-Pro", "credit_factor": 0.8, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
+    {"key": "dfmodel", "name": "DeepSeek-V4-Flash", "credit_factor": 0.3, "is_reasoning": True, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
     {"key": "mmodel", "name": "MiniMax-M3", "credit_factor": 0.2, "is_reasoning": False, "is_vision": True, "max_input_tokens": 1_000_000, "context_windows": [200_000, 400_000, 1_000_000], "probe_default": True, "kind": "model"},
 )
 
@@ -44,14 +45,23 @@ THINKING_CONFIG_BY_MODEL: dict[str, dict[str, Any]] = {
     "performance": {"efforts": ["low", "medium", "high", "xhigh", "max"], "default_effort": "medium"},
     "cmodel": {"efforts": ["low", "medium", "high", "xhigh", "max"], "default_effort": "high"},
     "qmodel_38max": {"efforts": ["low", "medium", "xhigh"], "default_effort": "xhigh"},
+    "qfmodel": {"efforts": ["low", "medium", "xhigh"], "default_effort": "xhigh"},
     "qmodel_latest": {"efforts": [], "default_effort": None},
     "qmodel": {"efforts": [], "default_effort": None},
     "kmodel_latest": {"efforts": ["low", "high", "max"], "default_effort": "max"},
     "gmodel": {"efforts": ["low", "high", "max"], "default_effort": "max"},
-    "gm51model": {"efforts": ["high", "max"], "default_effort": "max"},
+    "gfmodel": {"efforts": ["high", "max"], "default_effort": "max"},
     "dmodel": {"efforts": ["high", "max"], "default_effort": "max"},
     "dfmodel": {"efforts": ["low", "high", "max"], "default_effort": "max"},
 }
+
+
+def context_length_of(entry: dict[str, Any]) -> int:
+    """Largest advertised context window, else the catalog max_input_tokens."""
+    windows = entry.get("context_windows") or []
+    if windows:
+        return int(max(windows))
+    return int(entry["max_input_tokens"])
 
 
 def public_model_catalog() -> list[dict[str, Any]]:
@@ -64,6 +74,7 @@ def public_model_catalog() -> list[dict[str, Any]]:
             for key, value in entry.items()
             if key != "probe_default"
         }
+        row["context_length"] = context_length_of(entry)
         row["supports_thinking"] = thinking is not None
         row["thinking_efforts"] = list(thinking["efforts"]) if thinking else []
         row["default_thinking_effort"] = (

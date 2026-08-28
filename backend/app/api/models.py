@@ -19,6 +19,11 @@ async def list_models():
                 "owned_by": "qoder",
                 "display_name": model["name"],
                 "credit_factor": model["credit_factor"],
+                "context_length": model["context_length"],
+                "context_windows": model["context_windows"],
+                "max_input_tokens": model["max_input_tokens"],
+                "is_reasoning": model["is_reasoning"],
+                "is_vision": model["is_vision"],
             }
             for model in models
     ]

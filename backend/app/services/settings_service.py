@@ -74,10 +74,13 @@ def _normalize_value(key: str, value: object) -> Optional[SettingValue]:
                 return None
         if not isinstance(candidate, (list, tuple)):
             return None
-        if not all(isinstance(item, str) and item in MODEL_KEYS for item in candidate):
+        if not all(isinstance(item, str) for item in candidate):
             return None
-        selected = set(candidate)
-        # Store in catalog order, deduped.  This keeps API/UI output stable.
+        selected = {item for item in candidate if item in MODEL_KEYS}
+        # All-unknown (retired gm51model, typos) falls back to defaults.
+        # Mixed lists just drop the retired keys.
+        if candidate and not selected:
+            return None
         return [key for key in MODEL_KEYS_IN_ORDER if key in selected]
     return None
 
