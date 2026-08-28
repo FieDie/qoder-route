@@ -9,12 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.schemas import (
-    AccountCreate, AccountUpdate, AccountOut, AccountPoolStatus, DashboardStats
+    AccountCreate, AccountOut, AccountPoolStatus, DashboardStats
 )
 from app.models.account import Account
 from app.services.account_pool import pool
 from app.services.qoder_client import validate_pat, QODER_MODEL_DISPLAY
-from app.services.model_catalog import public_model_catalog
 from app.services import logbus
 from app.services import quota_service
 
@@ -34,26 +33,6 @@ _COMPLETION_MESSAGES = frozenset({
     "anthropic stream done",    # Anthropic streaming
     "anthropic completion ok",  # Anthropic non-streaming
 })
-
-
-@router.get("/models/list", response_model=list[dict])
-async def get_available_models():
-    return [
-        {"display_name": model["name"], "level_key": model["key"]}
-        for model in public_model_catalog()
-    ]
-
-
-@router.get("/pool/refresh")
-async def refresh_pool():
-    await pool._refresh()
-    return {"ok": True}
-
-
-@router.post("/quota/refresh-all")
-async def refresh_all_quotas():
-    count = await pool.refresh_all_quotas()
-    return {"ok": True, "refreshed": count}
 
 
 @router.get("/stats/activity")
@@ -257,32 +236,6 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
 
 
 # ── Item routes LAST ──
-
-@router.get("/{account_id}", response_model=AccountOut)
-async def get_account(account_id: int, db: AsyncSession = Depends(get_db)):
-    acc = await pool.get_account_by_id(db, account_id)
-    if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return AccountOut.model_validate(acc)
-
-
-@router.patch("/{account_id}", response_model=AccountOut)
-async def update_account(account_id: int, body: AccountUpdate, db: AsyncSession = Depends(get_db)):
-    update_data = body.model_dump(exclude_none=True, exclude_unset=True)
-
-    if "pat_token" in update_data:
-        valid, msg = await validate_pat(update_data["pat_token"])
-        if not valid:
-            raise HTTPException(status_code=400, detail=f"Token validation failed: {msg}")
-
-    try:
-        acc = await pool.update_account(db, account_id, **update_data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return AccountOut.model_validate(acc)
-
 
 @router.delete("/{account_id}")
 async def delete_account(account_id: int, db: AsyncSession = Depends(get_db)):

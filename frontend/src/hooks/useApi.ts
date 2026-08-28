@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Account, AccountPoolStatus, ActivityStats, AppSettings, CreatedPanelApiKey, DashboardStats, ModelCatalogEntry, ModelEntry, ModelStatusSnapshot, PanelApiKey, WorkerStatus } from '../types'
+import type { Account, AccountPoolStatus, ActivityStats, AppSettings, CreatedPanelApiKey, DashboardStats, ModelCatalogEntry, ModelStatusSnapshot, PanelApiKey, WorkerStatus } from '../types'
 import { authHeaders, notifyUnauthorized } from '../lib/apiKey'
 
 const BASE = ''
@@ -80,14 +80,6 @@ export function useModelStatus() {
   })
 }
 
-export function useAvailableModels() {
-  return useQuery<ModelEntry[]>({
-    queryKey: ['models'],
-    queryFn: () => api('/api/accounts/models/list'),
-    staleTime: 300000,
-  })
-}
-
 export function useModelCatalog() {
   return useQuery<ModelCatalogEntry[]>({
     queryKey: ['model-catalog'],
@@ -112,20 +104,6 @@ export function useAddAccount() {
         qc.invalidateQueries({ queryKey: ['accounts', 'available'] })
         qc.invalidateQueries({ queryKey: ['accounts', 'exhausted'] })
       }, 2500)
-    },
-  })
-}
-
-export function useUpdateAccount() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, ...data }: { id: number; name?: string; priority?: number; model_level?: string }) =>
-      api<Account>(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['pool-status'] })
-      qc.invalidateQueries({ queryKey: ['dashboard-stats'] })
-      qc.invalidateQueries({ queryKey: ['accounts', 'available'] })
-      qc.invalidateQueries({ queryKey: ['accounts', 'exhausted'] })
     },
   })
 }

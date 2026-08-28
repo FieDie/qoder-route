@@ -138,7 +138,6 @@
   .chip-solid  { background: #fafafa; color: #000; border: 1px solid #fafafa; }
   .chip-outline{ background: transparent; color: #d4d4d4; border: 1px solid rgba(255,255,255,0.25); }
   .chip-muted  { background: rgba(255,255,255,0.06); color: #a3a3a3; border: 1px solid rgba(255,255,255,0.08); }
-  .chip-faded  { background: transparent; color: #737373; border: 1px solid rgba(255,255,255,0.08); }
 
   /* ── Labels ────────────────────────────── */
   .label {

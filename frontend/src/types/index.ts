@@ -56,11 +56,6 @@ export interface DashboardStats {
   }>
 }
 
-export interface ModelEntry {
-  display_name: string
-  level_key: string
-}
-
 export interface ModelCatalogEntry {
   key: string
   name: string

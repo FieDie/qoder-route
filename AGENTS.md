@@ -25,7 +25,7 @@ QoderRoute/
 │   │   │   ├── account.py        # Account table (PAT, plan, quota, usage fields)
 │   │   │   ├── app_setting.py    # AppSetting table (key/value DB-backed settings)
 │   │   │   ├── pool_counter.py   # PoolCounter table (lifetime credits_spent counter)
-│   │   │   └── schemas.py        # Pydantic models: AccountCreate/Update/Out, ChatCompletion*, DashboardStats*
+│   │   │   └── schemas.py        # Pydantic models: AccountCreate/Out, ChatCompletion*, DashboardStats*
 │   │   ├── services/             # Business logic services
 │   │   │   ├── account_pool.py   # AccountPool class (rotation, refresh, mark_success/failure)
 │   │   │   ├── direct_client.py      # Build native request body, run_infer generator (signer→upstream stream)
@@ -210,7 +210,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   `POST /api/accounts` accepts an optional `name`. If omitted or blank, `quota_service.resolve_account_name` uses `/api/v1/userinfo` (`name` / `username` / `user_name`, same keys as the CLI credential record), then email, then `"account"`.
 
 - **No Per-Account Disable**  
-  Accounts cannot be toggled inactive from the UI or `AccountUpdate`. Startup backfill forces `is_active = 1` for any legacy disabled rows; the column remains only so existing pool filters keep working.
+  Accounts cannot be toggled inactive. Startup backfill forces `is_active = 1` for any legacy disabled rows; the column remains only so existing pool filters keep working.
 
 - **Context Window Parameter Placement**  
   The `context_length` parameter inside the request body sets the reservation; putting the same value in `model_config.context_window` has no effect on the inference path. Use only `parameters.context_length`.

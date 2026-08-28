@@ -217,14 +217,10 @@ Settings managed via `/api/settings` (stored in DB):
 **Admin REST API**
 
 - `GET POST /api/accounts` — List accounts or create a new account (PAT validation required). Includes filter views: `GET /api/accounts/available`, `GET /api/accounts/exhausted`.
-- `GET /api/accounts/{id}` — Get account details.
-- `PATCH /api/accounts/{id}` — Update account fields.
 - `DELETE /api/accounts/{id}` — Delete account.
 - `POST /api/accounts/{id}/quota/refresh` — Refresh quota for one account.
-- `POST /api/accounts/quota/refresh-all` — Refresh all active accounts' quotas.
 - `GET /api/accounts/stats/dashboard` — Dashboard statistics.
 - `GET /api/accounts/stats/activity` — Recent traffic aggregated by minute and model.
-- `GET /api/accounts/models/list` — Available model tiers.
 - `GET /api/models/catalog` — Full router catalog with keys, credit factors, context windows, Reasoning/Thinking, and vision capabilities.
 - `GET /api/status/models` — Model health snapshot (TPS, latency, alive/error).
 - `GET /api/logs` — Recent log events.

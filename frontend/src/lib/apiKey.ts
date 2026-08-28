@@ -1,7 +1,6 @@
 const STORAGE_KEY = 'qoderroute.apiKey'
 
 export const UNAUTHORIZED_EVENT = 'qoderroute:unauthorized'
-export const API_KEY_EVENT = 'qoderroute:apikey'
 
 export function getApiKey(): string {
   try {
@@ -18,7 +17,6 @@ export function setApiKey(key: string) {
   } catch {
     /* private mode / blocked storage */
   }
-  window.dispatchEvent(new Event(API_KEY_EVENT))
 }
 
 export function authHeaders(): Record<string, string> {

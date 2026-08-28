@@ -13,14 +13,6 @@ class AccountCreate(BaseModel):
     default_model: str = ""
 
 
-class AccountUpdate(BaseModel):
-    name: Optional[str] = None
-    pat_token: Optional[str] = None
-    priority: Optional[int] = None
-    model_level: Optional[str] = None
-    default_model: Optional[str] = None
-
-
 class AccountOut(BaseModel):
     id: int
     name: str
@@ -103,17 +95,6 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[dict]
     usage: dict
-
-
-# ── Auth ──
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
-class TokenData(BaseModel):
-    username: Optional[str] = None
 
 
 # ── Stats ──

@@ -1,17 +1,10 @@
-import asyncio
 import json
-import logging
 import os
-import re
-import uuid
-from typing import AsyncGenerator, Optional
-
-import httpx
+from typing import Optional
 
 from app.core.config import settings
 from app.services.model_catalog import MODEL_CATALOG
 
-logger = logging.getLogger("qoderroute.qoder")
 
 def _model_slug(value: str) -> str:
     return value.lower().replace(" ", "-").replace("_", "-")
@@ -40,10 +33,6 @@ QODER_MODEL_LEVELS.update({
 # send the exact ID must keep reaching it instead of silently falling to auto.
 _LEGACY_MODEL_LEVELS = frozenset({"qmodel_preview"})
 
-QODER_JOB_TOKEN_EXCHANGE_URL = "https://openapi.qoder.sh/api/v1/jobToken/exchange"
-
-CLI_TIMEOUT_SECONDS = 300
-
 
 def resolve_model_level(model: str) -> str:
     # Strip provider prefix like "qoder/deepseek-v4-flash".  Model IDs from
@@ -68,35 +57,6 @@ def resolve_model_level(model: str) -> str:
     return "auto"
 
 
-async def list_models_via_cli(pat_token: str) -> list[str]:
-    try:
-        env = {**os.environ}
-        if pat_token:
-            env["QODER_PERSONAL_ACCESS_TOKEN"] = pat_token
-        proc = await asyncio.create_subprocess_exec(
-            _find_qodercli(),
-            "--list-models",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
-        if proc.returncode != 0:
-            logger.warning(f"qodercli --list-models failed: {stderr.decode()[:200]}")
-            return []
-
-        lines = stdout.decode().strip().split("\n")
-        models = []
-        for line in lines:
-            line = line.strip()
-            if line and line.upper() != "MODEL" and not line.startswith("Invalid"):
-                models.append(line)
-        return models
-    except Exception as e:
-        logger.warning(f"Failed to list models: {e}")
-        return []
-
-
 async def validate_pat(pat_token: str) -> tuple[bool, str]:
     """Lightweight PAT check over HTTP: job-token exchange + userinfo.
 
@@ -110,32 +70,6 @@ async def validate_pat(pat_token: str) -> tuple[bool, str]:
     if uid:
         return True, "Valid"
     return False, "token validation failed — no uid from userinfo"
-
-
-async def exchange_job_token(pat_token: str) -> Optional[str]:
-    if not pat_token.startswith("pt-"):
-        return pat_token
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                QODER_JOB_TOKEN_EXCHANGE_URL,
-                json={"personal_token": pat_token},
-            )
-            if resp.status_code != 200:
-                logger.warning(f"Job token exchange failed: {resp.status_code}")
-                return pat_token
-
-            data = resp.json()
-            for key in ["job_token", "jobToken", "jt", "token"]:
-                val = data.get(key) or (data.get("data") or {}).get(key)
-                if val and isinstance(val, str) and val.startswith("jt-"):
-                    return val
-
-            return pat_token
-    except Exception as e:
-        logger.warning(f"Job token exchange error: {e}")
-        return pat_token
 
 
 def _flatten_content(content) -> str:
@@ -218,210 +152,6 @@ def _build_prompt(messages: list[dict], tools: Optional[list[dict]] = None) -> s
         parts.append("Reply now with the assistant response only.")
 
     return "\n\n".join(parts)
-
-
-TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-
-
-def parse_tool_calls(text: str) -> tuple[str, list[dict]]:
-    """Extract <tool_call> blocks. Returns (remaining_text, openai_tool_calls)."""
-    calls = []
-    for m in TOOL_CALL_RE.finditer(text):
-        try:
-            payload = json.loads(m.group(1))
-        except json.JSONDecodeError:
-            continue
-        name = payload.get("name")
-        if not name:
-            continue
-        args = payload.get("arguments", {})
-        calls.append({
-            "id": f"call_{uuid.uuid4().hex[:20]}",
-            "type": "function",
-            "function": {
-                "name": name,
-                "arguments": args if isinstance(args, str) else json.dumps(args),
-            },
-        })
-    remaining = TOOL_CALL_RE.sub("", text).strip()
-    return remaining, calls
-
-
-async def stream_chat_events(
-    pat_token: str,
-    model_level: str,
-    messages: list[dict],
-) -> AsyncGenerator[dict, None]:
-    """Stream events from qodercli stream-json output.
-
-    Yields dicts:
-      {"type": "text", "text": str}           — assistant text delta
-      {"type": "thinking", "thinking": str}   — reasoning delta
-      {"type": "done", "result": str, "usage": dict}  — final result
-      {"type": "error", "message": str}       — failure
-    """
-    resolved_model = resolve_model_level(model_level)
-    prompt = _build_prompt(messages)
-
-    args = [
-        _find_qodercli(),
-        "--print",
-        "--output-format", "stream-json",
-        "--include-partial-messages",
-        "--model", resolved_model,
-        "--tools", "",
-        "--no-session-persistence",
-        "--config-dir", f"{settings.data_dir}/qoder-cli",
-    ]
-
-    env = {**os.environ}
-    if pat_token:
-        env["QODER_PERSONAL_ACCESS_TOKEN"] = pat_token
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-    except FileNotFoundError:
-        yield {"type": "error", "message": "qodercli not found. Install from https://qoder.com"}
-        return
-
-    try:
-        proc.stdin.write(prompt.encode())
-        await proc.stdin.drain()
-        proc.stdin.close()
-    except (BrokenPipeError, ConnectionResetError):
-        pass
-
-    deadline = asyncio.get_event_loop().time() + CLI_TIMEOUT_SECONDS
-    saw_result = False
-
-    try:
-        while True:
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                proc.kill()
-                yield {"type": "error", "message": "qodercli timed out"}
-                return
-
-            try:
-                line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
-            except asyncio.TimeoutError:
-                proc.kill()
-                yield {"type": "error", "message": "qodercli timed out"}
-                return
-
-            if not line:
-                break
-
-            try:
-                event = json.loads(line.decode("utf-8", errors="replace").strip())
-            except json.JSONDecodeError:
-                continue
-
-            etype = event.get("type")
-
-            if etype == "stream_event":
-                inner = event.get("event", {})
-                inner_type = inner.get("type")
-
-                if inner_type == "content_block_delta":
-                    delta = inner.get("delta", {})
-                    delta_type = delta.get("type")
-                    if delta_type == "text_delta":
-                        text = delta.get("text", "")
-                        if text:
-                            yield {"type": "text", "text": text}
-                    elif delta_type == "thinking_delta":
-                        thinking = delta.get("thinking", "")
-                        if thinking:
-                            yield {"type": "thinking", "thinking": thinking}
-
-            elif etype == "result":
-                saw_result = True
-                is_error = event.get("is_error", False) or event.get("subtype") == "error"
-                if is_error:
-                    message = event.get("result") or event.get("error") or "Unknown error"
-                    yield {"type": "error", "message": str(message)}
-                else:
-                    usage_raw = event.get("usage") or {}
-                    prompt_tok = usage_raw.get("input_tokens", 0)
-                    completion_tok = usage_raw.get("output_tokens", 0)
-                    result_text = str(event.get("result", ""))
-                    # Qoder reports 0 tokens and bills via credits; estimate tokens
-                    # from text when the upstream reports zeros so pool accounting works.
-                    if completion_tok == 0 and result_text:
-                        completion_tok = max(len(result_text) // 4, 1)
-                    usage = {
-                        "prompt_tokens": prompt_tok,
-                        "completion_tokens": completion_tok,
-                        "total_tokens": prompt_tok + completion_tok,
-                        "credits": event.get("total_credits") or usage_raw.get("credits") or 0,
-                    }
-                    yield {
-                        "type": "done",
-                        "result": result_text,
-                        "usage": usage,
-                    }
-                return
-
-        # stdout closed without a result event
-        if not saw_result:
-            await proc.wait()
-            stderr_out = await proc.stderr.read()
-            err = stderr_out.decode("utf-8", errors="replace").strip()[:500]
-            rc = proc.returncode
-            if rc and rc != 0:
-                yield {"type": "error", "message": f"qodercli exited {rc}: {err or 'no output'}"}
-            else:
-                yield {"type": "error", "message": err or "qodercli closed stream without result"}
-
-    except asyncio.CancelledError:
-        proc.kill()
-        raise
-    finally:
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
-
-
-async def chat_completion(
-    pat_token: str,
-    model_level: str,
-    messages: list[dict],
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
-) -> dict:
-    """Non-streaming completion: consumes the event stream, returns final text + real usage."""
-    final_result = ""
-    final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    text_parts: list[str] = []
-
-    async for event in stream_chat_events(pat_token, model_level, messages):
-        if event["type"] == "text":
-            text_parts.append(event["text"])
-        elif event["type"] == "done":
-            final_result = event["result"] or "".join(text_parts)
-            final_usage = event["usage"]
-        elif event["type"] == "error":
-            return {"text": "", "is_error": True, "error_message": event["message"], "usage": final_usage}
-
-    if not final_result and text_parts:
-        final_result = "".join(text_parts)
-
-    return {
-        "text": final_result,
-        "is_error": False,
-        "error_message": "",
-        "usage": final_usage,
-    }
 
 
 def _find_qodercli() -> str:

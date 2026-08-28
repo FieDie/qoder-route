@@ -47,23 +47,3 @@ export function planEndInfo(epoch: number | null): { label: string; daysLeft: nu
   const dateStr = new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
   return { label: dateStr, daysLeft }
 }
-
-export function getModelColor(level: string): string {
-  const colors: Record<string, string> = {
-    cmodel: '#e879f9',
-    qmodel_preview: '#818cf8',
-    qmodel_38max: '#818cf8',
-    qfmodel: '#a5b4fc',
-    qmodel_latest: '#6366f1',
-    qmodel: '#4f46e5',
-    kmodel_latest: '#2dd4bf',
-    kmodel: '#14b8a6',
-    gmodel: '#fbbf24',
-    gfmodel: '#f59e0b',
-    gm51model: '#f59e0b',
-    dmodel: '#ef4444',
-    dfmodel: '#f97316',
-    mmodel: '#a855f7',
-  }
-  return colors[level] || '#6b7280'
-}

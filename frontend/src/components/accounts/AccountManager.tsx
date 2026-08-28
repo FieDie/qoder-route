@@ -233,7 +233,7 @@ function AccountCard({ acc, onDelete, onRefreshQuota, quotaRefreshing, quotaRefr
 }
 
 export function AccountManager() {
-  const { data: pool, isLoading: loadingFromPool, error } = usePoolStatus()
+  const { data: pool, error } = usePoolStatus()
   const { data: appSettings } = useSettings()
   const addAccount = useAddAccount()
   const deleteAccount = useDeleteAccount()

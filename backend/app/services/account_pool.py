@@ -414,31 +414,6 @@ class AccountPool:
         await self._refresh()
         return True
 
-    async def update_account(self, session: AsyncSession, account_id: int, **kwargs) -> Optional[Account]:
-        acc = await session.get(Account, account_id)
-        if not acc:
-            return None
-        for key, value in kwargs.items():
-            # Disable/enable was removed — is_active stays true via startup backfill.
-            if key == "is_active":
-                continue
-            if value is not None and hasattr(acc, key):
-                if key == "pat_token":
-                    taken = await session.execute(
-                        select(Account.id).where(
-                            Account.pat_token == value,
-                            Account.id != account_id,
-                        )
-                    )
-                    if taken.scalar_one_or_none() is not None:
-                        raise ValueError("This PAT is already in the pool")
-                    acc.pat_short = value[:12] + "..."
-                setattr(acc, key, value)
-        await session.commit()
-        await session.refresh(acc)
-        await self._refresh()
-        return acc
-
     async def get_stats(self, session: AsyncSession) -> dict:
         stmt = select(
             func.count(Account.id).label("total"),
