@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.api import accounts, chat, models, logs, settings as settings_api, status as status_api, anthropic, auth as auth_api
 from app.services.account_pool import pool
-from app.services import settings_service, signer_service, model_probe
+from app.services import settings_service, signer_service, model_probe, qoder_version
 from app.core.auth import AuthMiddleware
 
 # Worker endpoints are optional — the public build ships without them.
@@ -65,6 +65,8 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
     await settings_service.load()
+    await qoder_version.refresh(force=True)
+    logger.info("Qoder CLI version: %s", qoder_version.snapshot())
 
     if not await signer_service.ensure_signer():
         raise RuntimeError(
@@ -73,6 +75,10 @@ async def lifespan(app: FastAPI):
     signer_task = asyncio.create_task(
         signer_service.signer_supervisor(),
         name="signer-supervisor",
+    )
+    version_task = asyncio.create_task(
+        qoder_version.refresher_loop(),
+        name="qoder-version-refresher",
     )
 
     async def _initial_quota():
@@ -88,11 +94,13 @@ async def lifespan(app: FastAPI):
         refresher.cancel()
         initial_task.cancel()
         signer_task.cancel()
+        version_task.cancel()
         prober.cancel()
         await asyncio.gather(
             refresher,
             initial_task,
             signer_task,
+            version_task,
             prober,
             return_exceptions=True,
         )
@@ -132,6 +140,7 @@ app.include_router(auth_api.router)
 @app.get("/api/health")
 async def health():
     signer_ok = await signer_service.signer_is_healthy()
+    cli = qoder_version.snapshot()
     return JSONResponse(
         status_code=200 if signer_ok else 503,
         content={
@@ -139,6 +148,8 @@ async def health():
             "app": settings.app_name,
             "version": "1.0.0",
             "signer": "ok" if signer_ok else "unavailable",
+            "qoder_cli_version": cli["version"],
+            "qoder_cli_version_source": cli["source"],
         },
     )
 

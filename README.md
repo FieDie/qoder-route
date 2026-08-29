@@ -11,13 +11,13 @@ QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qod
 ## Features
 
 - **Account Pool with Fill‑First Rotation**  
-  Accounts are ordered by priority (descending) then ID (ascending). The first available account with remaining quota serves until it exhausts, then the next in line takes over.
+  Accounts are ordered by priority (descending) then ID (ascending). The first available account with remaining quota serves until it exhausts, then the next in line takes over. Near exhaustion, concurrent starts spill onto the next account so a request burst does not all fail on the same dying PAT.
 
 - **Quota Tracking & Plan Metadata**  
   Every account's plan tier, name, end date, and quota usage are fetched from `openapi.qoder.sh`. The background loop refreshes this every 5 minutes. Account cards display plan type, paid/free status, plan end date, and quota progress. When an account hits quota, it is parked and will automatically rejoin rotation once credits renew. Paid plan names are derived from the quota size, since the plan endpoint does not distinguish tiers: 2,000 credits → Pro Plan, 6,000 → Pro+ Plan, 20,000 → Ultra Plan (trials keep their API-reported name, e.g. Pro Trial with 300 credits).
 
 - **Free-Tier Rejection on Add**  
-  Adding an account validates the PAT over HTTP (job-token exchange + userinfo — no CLI required) and then checks the plan. Accounts on the free tier (`personal_standard`, no paid plan) are rejected with a clear error instead of being parked as exhausted right away. Accounts with a plan but no remaining quota are still added and parked, so they rejoin automatically when the plan renews.
+  Adding an account validates the PAT over HTTP (job-token exchange + userinfo — no CLI required) and then checks the plan. The account name is optional: when omitted, the router fills it from the Qoder profile (`/api/v1/userinfo`). Accounts on the free tier (`personal_standard`, no paid plan) are rejected with a clear error instead of being parked as exhausted right away. Accounts with a plan but no remaining quota are still added and parked, so they rejoin automatically when the plan renews.
 
 - **Rate-Limit vs Quota Distinction**  
   Transient 429 / rate-limit responses never park or delete an account — only genuine quota-exhaustion signals do (quota / credits-exhausted markers). Rate-limited accounts get the normal failure cooldown and recover automatically.
@@ -33,6 +33,9 @@ QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qod
 
 - **Runtime Settings**  
   All configuration values are persisted in the database and editable via `/api/settings`. Options control log visibility, token/email/request display, auto-delete behavior for exhausted accounts, Qoder backend endpoint selection, probe frequency, and the exact models included in each probe cycle.
+
+- **Auto Cosy/CLI Version**  
+  The router reads the published `@qoder-ai/qodercli` version from npm and applies it to Cosy headers, the business envelope, and the signer context — no hand edits on every CLI release.
 
 - **Auto-Delete Exhausted Accounts Option**  
   When enabled, accounts marked as quota-exceeded are removed from the pool.
@@ -101,10 +104,6 @@ Background Loops:
 - npm (to build the frontend)
 
 ## Setup
-
-### Prerequisites
-
-The repo ships with the WASM auth module (`backend/signer/qoder_auth_wasm.wasm`, extracted from Qoder CLI 1.1.17) — no extra steps needed, the signer works out of the box.
 
 ### Backend Installation
 

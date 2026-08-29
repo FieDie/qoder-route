@@ -11,8 +11,6 @@ import httpx
 logger = logging.getLogger("qoderroute.quota")
 
 QODER_BASE = "https://openapi.qoder.sh"
-QODER_UA = "qoder/1.1.26"
-QODER_VERSION = "1.1.26"
 
 EXCHANGE_URL = f"{QODER_BASE}/api/v1/jobToken/exchange"
 PLAN_URL = f"{QODER_BASE}/api/v2/user/plan"
@@ -24,11 +22,13 @@ _job_token_locks: dict[str, asyncio.Lock] = {}
 
 
 def _base_headers() -> dict[str, str]:
+    from app.services import qoder_version
+    version = qoder_version.get()
     return {
-        "User-Agent": QODER_UA,
+        "User-Agent": f"qoder/{version}",
         "Accept": "application/json",
         "X-Request-ID": str(uuid.uuid4()).upper(),
-        "Cosy-Version": QODER_VERSION,
+        "Cosy-Version": version,
         "Cosy-ClientType": "5",
         "Cosy-MachineOS": "x86_64_linux",
     }

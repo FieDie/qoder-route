@@ -154,6 +154,13 @@ async def chat_completions(
         tried_ids.add(account.id)
         account_id = account.id
         pat_token = account.pat_token
+        machine_id = account.machine_id
+        # Re-check + lease so concurrent park between select and upstream
+        # start cannot send the client to a dying PAT.
+        if not await pool.begin_request(account_id):
+            continue
+        leased = True
+
         def start_gen():
             return direct_client.run_infer(
                 pat_token,
@@ -166,216 +173,221 @@ async def chat_completions(
                 body.max_tokens,
                 session_id,
                 tool_choice=body.tool_choice,
-                machine_id=account.machine_id,
+                machine_id=machine_id,
             )
 
-        if body.stream:
-            gen = start_gen()
-            # Probe the first event before committing the SSE stream so an
-            # upstream error (403, etc.) surfaces with its real status instead
-            # of a 200 OK with [error] text buried in the body.
-            try:
-                first = await gen.__anext__()
-            except StopAsyncIteration:
-                first = {"type": "error", "message": "empty upstream response"}
-
-            # Flaky connection drop on the very first event — retry once.
-            if first.get("type") == "error" and looks_like_transient_stream_error(first.get("message", "")):
-                logbus.push("info", "chat", f"transient stream drop — retrying in 1s: {first.get('message', '')[:120]}", account_id=account_id, model=model_level)
-                await asyncio.sleep(1)
+        try:
+            if body.stream:
                 gen = start_gen()
+                # Probe the first event before committing the SSE stream so an
+                # upstream error (403, etc.) surfaces with its real status instead
+                # of a 200 OK with [error] text buried in the body.
                 try:
                     first = await gen.__anext__()
                 except StopAsyncIteration:
                     first = {"type": "error", "message": "empty upstream response"}
 
-            # 10605 with an empty queue (isQueued=false): the model may clear
-            # in a moment — wait 3s and retry once before surfacing the error.
-            if first.get("type") == "error" and classify_chat_error(first.get("message", ""), first.get("error_scope")) == "model_queue":
-                queue = parse_model_queue(first.get("message", ""))
-                if queue is not None and queue.get("isQueued") is False:
-                    logbus.push("info", "chat", "model queue empty (10605, isQueued=false) — retrying in 3s", account_id=account_id, model=model_level)
-                    await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
+                # Flaky connection drop on the very first event — retry once.
+                if first.get("type") == "error" and looks_like_transient_stream_error(first.get("message", "")):
+                    logbus.push("info", "chat", f"transient stream drop — retrying in 1s: {first.get('message', '')[:120]}", account_id=account_id, model=model_level)
+                    await asyncio.sleep(1)
                     gen = start_gen()
                     try:
                         first = await gen.__anext__()
                     except StopAsyncIteration:
                         first = {"type": "error", "message": "empty upstream response"}
 
-            if first.get("type") == "error":
-                msg = first.get("message", "upstream error")
-                error_kind = classify_chat_error(msg, first.get("error_scope"))
+                # 10605 with an empty queue (isQueued=false): the model may clear
+                # in a moment — wait 3s and retry once before surfacing the error.
+                if first.get("type") == "error" and classify_chat_error(first.get("message", ""), first.get("error_scope")) == "model_queue":
+                    queue = parse_model_queue(first.get("message", ""))
+                    if queue is not None and queue.get("isQueued") is False:
+                        logbus.push("info", "chat", "model queue empty (10605, isQueued=false) — retrying in 3s", account_id=account_id, model=model_level)
+                        await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
+                        gen = start_gen()
+                        try:
+                            first = await gen.__anext__()
+                        except StopAsyncIteration:
+                            first = {"type": "error", "message": "empty upstream response"}
+
+                if first.get("type") == "error":
+                    msg = first.get("message", "upstream error")
+                    error_kind = classify_chat_error(msg, first.get("error_scope"))
+                    if error_kind == "infrastructure":
+                        logbus.push("error", "chat", f"local infrastructure error: {msg[:200]}", account_id=account_id, model=model_level)
+                        raise HTTPException(status_code=first.get("status") or 503, detail=msg)
+                    if error_kind == "model_queue":
+                        # 10605: model queued upstream — don't fail the account.
+                        logbus.push("warn", "chat", f"model queued: {msg[:200]}", account_id=account_id, model=model_level)
+                        raise HTTPException(status_code=first.get("status") or 503, detail=msg)
+                    if error_kind == "quota":
+                        logbus.push("warn", "chat", "quota exceeded, swapping account", account_id=account_id, model=model_level)
+                        await pool.mark_quota_exceeded(account_id)
+                        continue  # auto-swap to the next account
+                    logbus.push("error", "chat", f"upstream error: {msg[:200]}", account_id=account_id, model=model_level)
+                    await pool.mark_failure(account_id, msg)
+                    raise HTTPException(status_code=first.get("status") or 502, detail=msg)
+
+                leased = False  # ownership moves to the SSE response
+                return _sse_response(
+                    account_id,
+                    model_level,
+                    body.model or model_level,
+                    gen,
+                    first,
+                )
+
+            queue_retried = False
+            transient_retried = False
+            while True:
+                final_text = ""
+                final_thinking = ""
+                final_reasoning_signature = ""
+                final_reasoning_item: dict | None = None
+                final_tool_call_fragments: dict[int, dict] = {}
+                final_function_call: dict = {}
+                tool_call_chunks = 0
+                tool_call_entries = 0
+                final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                final_diagnostics: dict = {}
+                final_finish_reason: str | None = None
+                error_msg = None
+                error_status = None
+                error_scope = None
+
+                async for event in start_gen():
+                    if event["type"] == "text":
+                        final_text += event["text"]
+                    elif event["type"] == "thinking":
+                        final_thinking += event["thinking"]
+                    elif event["type"] == "reasoning_signature":
+                        final_reasoning_signature += event["signature"]
+                    elif event["type"] == "reasoning_item":
+                        final_reasoning_item = event["reasoning_item"]
+                    elif event["type"] == "tool_calls":
+                        tool_call_chunks += 1
+                        tool_call_entries += len(event["tool_calls"])
+                        _merge_tool_call_fragments(
+                            final_tool_call_fragments,
+                            event["tool_calls"],
+                        )
+                    elif event["type"] == "function_call":
+                        fragment = event["function_call"]
+                        if fragment.get("name"):
+                            final_function_call["name"] = (
+                                final_function_call.get("name", "") + fragment["name"]
+                            )
+                        if fragment.get("arguments"):
+                            final_function_call["arguments"] = (
+                                final_function_call.get("arguments", "")
+                                + fragment["arguments"]
+                            )
+                    elif event["type"] == "done":
+                        u = event.get("usage") or {}
+                        final_diagnostics = event.get("diagnostics") or {}
+                        final_finish_reason = event.get("finish_reason")
+                        final_usage = {
+                            "prompt_tokens": u.get("prompt_tokens", 0),
+                            "completion_tokens": u.get("completion_tokens", 0),
+                            "total_tokens": u.get("total_tokens", 0),
+                            "credits": u.get("credits") or u.get("total_credits") or 0.0,
+                        }
+                    elif event["type"] == "error":
+                        error_msg = event["message"]
+                        error_status = event.get("status")
+                        error_scope = event.get("error_scope")
+
+                # Flaky mid-stream connection drop — retry once before failing.
+                if error_msg is not None and looks_like_transient_stream_error(error_msg) and not transient_retried:
+                    transient_retried = True
+                    logbus.push("info", "chat", f"transient stream drop — retrying in 1s: {error_msg[:120]}", account_id=account_id, model=model_level)
+                    await asyncio.sleep(1)
+                    continue
+
+                # 10605 with an empty queue (isQueued=false): the model may clear
+                # in a moment — wait 3s and retry once before surfacing the error.
+                if error_msg is not None and classify_chat_error(error_msg, error_scope) == "model_queue":
+                    queue = parse_model_queue(error_msg)
+                    if queue is not None and queue.get("isQueued") is False and not queue_retried:
+                        queue_retried = True
+                        logbus.push("info", "chat", "model queue empty (10605, isQueued=false) — retrying in 3s", account_id=account_id, model=model_level)
+                        await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
+                        continue
+                    logbus.push("warn", "chat", f"model queued: {error_msg[:200]}", account_id=account_id, model=model_level)
+                    raise HTTPException(status_code=error_status or 503, detail=error_msg)
+                break
+
+            if error_msg is not None:
+                error_kind = classify_chat_error(error_msg, error_scope)
                 if error_kind == "infrastructure":
-                    logbus.push("error", "chat", f"local infrastructure error: {msg[:200]}", account_id=account_id, model=model_level)
-                    raise HTTPException(status_code=first.get("status") or 503, detail=msg)
-                if error_kind == "model_queue":
-                    # 10605: model queued upstream — don't fail the account.
-                    logbus.push("warn", "chat", f"model queued: {msg[:200]}", account_id=account_id, model=model_level)
-                    raise HTTPException(status_code=first.get("status") or 503, detail=msg)
+                    logbus.push("error", "chat", f"local infrastructure error: {error_msg[:200]}", account_id=account_id, model=model_level)
+                    raise HTTPException(status_code=error_status or 503, detail=error_msg)
                 if error_kind == "quota":
-                    logbus.push("warn", "chat", "quota exceeded, swapping account", account_id=account_id, model=model_level)
+                    logbus.push("warn", "chat", f"quota exceeded, swapping account", account_id=account_id, model=model_level)
                     await pool.mark_quota_exceeded(account_id)
                     continue  # auto-swap to the next account
-                logbus.push("error", "chat", f"upstream error: {msg[:200]}", account_id=account_id, model=model_level)
-                await pool.mark_failure(account_id, msg)
-                raise HTTPException(status_code=first.get("status") or 502, detail=msg)
+                logbus.push("error", "chat", f"upstream error: {error_msg[:200]}", account_id=account_id, model=model_level)
+                await pool.mark_failure(account_id, error_msg)
+                raise HTTPException(status_code=error_status or 502, detail=error_msg)
 
-            return _sse_response(
+            await pool.mark_success(
                 account_id,
-                model_level,
-                body.model or model_level,
-                gen,
-                first,
+                final_usage.get("completion_tokens", 0),
+                final_usage.get("credits") or 0.0,
+            )
+            final_tool_calls = _finalize_tool_calls(final_tool_call_fragments)
+            logbus.push(
+                "info", "chat", f"completion ok",
+                account_id=account_id, model=model_level,
+                prompt_tokens=final_usage.get("prompt_tokens", 0),
+                completion_tokens=final_usage.get("completion_tokens", 0),
+                total_tokens=final_usage.get("total_tokens", 0),
+                thinking_chars=len(final_thinking),
+                reasoning_item=final_reasoning_item is not None,
+                reasoning_signature_chars=len(final_reasoning_signature),
+                tool_call_chunks=tool_call_chunks,
+                tool_call_fragments=tool_call_entries,
+                tool_calls=len(final_tool_calls),
+                function_call=bool(final_function_call),
+                finish_reason=final_finish_reason,
+                credits=final_usage.get("credits", 0),
+                **final_diagnostics,
             )
 
-        queue_retried = False
-        transient_retried = False
-        while True:
-            final_text = ""
-            final_thinking = ""
-            final_reasoning_signature = ""
-            final_reasoning_item: dict | None = None
-            final_tool_call_fragments: dict[int, dict] = {}
-            final_function_call: dict = {}
-            tool_call_chunks = 0
-            tool_call_entries = 0
-            final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            final_diagnostics: dict = {}
-            final_finish_reason: str | None = None
-            error_msg = None
-            error_status = None
-            error_scope = None
+            message: dict = {"role": "assistant", "content": final_text}
+            if final_thinking:
+                message["reasoning_content"] = final_thinking
+            if final_reasoning_signature:
+                # Keep both spellings: Qoder streams `signature`, while its native
+                # history representation calls the same value this longer name.
+                message["signature"] = final_reasoning_signature
+                message["reasoning_content_signature"] = final_reasoning_signature
+            if final_reasoning_item is not None:
+                message["reasoning_item"] = final_reasoning_item
+            if final_tool_calls:
+                message["tool_calls"] = final_tool_calls
+            if final_function_call:
+                message["function_call"] = final_function_call
 
-            async for event in start_gen():
-                if event["type"] == "text":
-                    final_text += event["text"]
-                elif event["type"] == "thinking":
-                    final_thinking += event["thinking"]
-                elif event["type"] == "reasoning_signature":
-                    final_reasoning_signature += event["signature"]
-                elif event["type"] == "reasoning_item":
-                    final_reasoning_item = event["reasoning_item"]
-                elif event["type"] == "tool_calls":
-                    tool_call_chunks += 1
-                    tool_call_entries += len(event["tool_calls"])
-                    _merge_tool_call_fragments(
-                        final_tool_call_fragments,
-                        event["tool_calls"],
-                    )
-                elif event["type"] == "function_call":
-                    fragment = event["function_call"]
-                    if fragment.get("name"):
-                        final_function_call["name"] = (
-                            final_function_call.get("name", "") + fragment["name"]
-                        )
-                    if fragment.get("arguments"):
-                        final_function_call["arguments"] = (
-                            final_function_call.get("arguments", "")
-                            + fragment["arguments"]
-                        )
-                elif event["type"] == "done":
-                    u = event.get("usage") or {}
-                    final_diagnostics = event.get("diagnostics") or {}
-                    final_finish_reason = event.get("finish_reason")
-                    final_usage = {
-                        "prompt_tokens": u.get("prompt_tokens", 0),
-                        "completion_tokens": u.get("completion_tokens", 0),
-                        "total_tokens": u.get("total_tokens", 0),
-                        "credits": u.get("credits") or u.get("total_credits") or 0.0,
-                    }
-                elif event["type"] == "error":
-                    error_msg = event["message"]
-                    error_status = event.get("status")
-                    error_scope = event.get("error_scope")
-
-            # Flaky mid-stream connection drop — retry once before failing.
-            if error_msg is not None and looks_like_transient_stream_error(error_msg) and not transient_retried:
-                transient_retried = True
-                logbus.push("info", "chat", f"transient stream drop — retrying in 1s: {error_msg[:120]}", account_id=account_id, model=model_level)
-                await asyncio.sleep(1)
-                continue
-
-            # 10605 with an empty queue (isQueued=false): the model may clear
-            # in a moment — wait 3s and retry once before surfacing the error.
-            if error_msg is not None and classify_chat_error(error_msg, error_scope) == "model_queue":
-                queue = parse_model_queue(error_msg)
-                if queue is not None and queue.get("isQueued") is False and not queue_retried:
-                    queue_retried = True
-                    logbus.push("info", "chat", "model queue empty (10605, isQueued=false) — retrying in 3s", account_id=account_id, model=model_level)
-                    await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
-                    continue
-                logbus.push("warn", "chat", f"model queued: {error_msg[:200]}", account_id=account_id, model=model_level)
-                raise HTTPException(status_code=error_status or 503, detail=error_msg)
-            break
-
-        if error_msg is not None:
-            error_kind = classify_chat_error(error_msg, error_scope)
-            if error_kind == "infrastructure":
-                logbus.push("error", "chat", f"local infrastructure error: {error_msg[:200]}", account_id=account_id, model=model_level)
-                raise HTTPException(status_code=error_status or 503, detail=error_msg)
-            if error_kind == "quota":
-                logbus.push("warn", "chat", f"quota exceeded, swapping account", account_id=account_id, model=model_level)
-                await pool.mark_quota_exceeded(account_id)
-                continue  # auto-swap to the next account
-            logbus.push("error", "chat", f"upstream error: {error_msg[:200]}", account_id=account_id, model=model_level)
-            await pool.mark_failure(account_id, error_msg)
-            raise HTTPException(status_code=error_status or 502, detail=error_msg)
-
-        await pool.mark_success(
-            account_id,
-            final_usage.get("completion_tokens", 0),
-            final_usage.get("credits") or 0.0,
-        )
-        final_tool_calls = _finalize_tool_calls(final_tool_call_fragments)
-        logbus.push(
-            "info", "chat", f"completion ok",
-            account_id=account_id, model=model_level,
-            prompt_tokens=final_usage.get("prompt_tokens", 0),
-            completion_tokens=final_usage.get("completion_tokens", 0),
-            total_tokens=final_usage.get("total_tokens", 0),
-            thinking_chars=len(final_thinking),
-            reasoning_item=final_reasoning_item is not None,
-            reasoning_signature_chars=len(final_reasoning_signature),
-            tool_call_chunks=tool_call_chunks,
-            tool_call_fragments=tool_call_entries,
-            tool_calls=len(final_tool_calls),
-            function_call=bool(final_function_call),
-            finish_reason=final_finish_reason,
-            credits=final_usage.get("credits", 0),
-            **final_diagnostics,
-        )
-
-        message: dict = {"role": "assistant", "content": final_text}
-        if final_thinking:
-            message["reasoning_content"] = final_thinking
-        if final_reasoning_signature:
-            # Keep both spellings: Qoder streams `signature`, while its native
-            # history representation calls the same value this longer name.
-            message["signature"] = final_reasoning_signature
-            message["reasoning_content_signature"] = final_reasoning_signature
-        if final_reasoning_item is not None:
-            message["reasoning_item"] = final_reasoning_item
-        if final_tool_calls:
-            message["tool_calls"] = final_tool_calls
-        if final_function_call:
-            message["function_call"] = final_function_call
-
-        return ChatCompletionResponse(
-            id=f"chatcmpl-{uuid.uuid4().hex[:12]}",
-            created=int(time.time()),
-            model=body.model or model_level,
-            choices=[{
-                "index": 0,
-                "message": message,
-                "finish_reason": final_finish_reason
-                or ("tool_calls" if final_tool_calls else "function_call" if final_function_call else "stop"),
-            }],
-            usage={
-                "prompt_tokens": final_usage.get("prompt_tokens", 0),
-                "completion_tokens": final_usage.get("completion_tokens", 0),
-                "total_tokens": final_usage.get("total_tokens", 0),
-            },
-        )
+            return ChatCompletionResponse(
+                id=f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                created=int(time.time()),
+                model=body.model or model_level,
+                choices=[{
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": final_finish_reason
+                    or ("tool_calls" if final_tool_calls else "function_call" if final_function_call else "stop"),
+                }],
+                usage={
+                    "prompt_tokens": final_usage.get("prompt_tokens", 0),
+                    "completion_tokens": final_usage.get("completion_tokens", 0),
+                    "total_tokens": final_usage.get("total_tokens", 0),
+                },
+            )
+        finally:
+            if leased:
+                await pool.end_request(account_id)
 
     raise HTTPException(
         status_code=503,
@@ -518,6 +530,8 @@ def _sse_response(
             # Exceptions in router/SSE processing are local infrastructure
             # failures. Explicit upstream account errors arrive as events.
             yield _openai_chunk(chunk_id, model, created, {"content": f"[error] {e}"}, "stop")
+        finally:
+            await pool.end_request(account_id)
 
         if not errored and not saw_done:
             yield _openai_chunk(chunk_id, model, created, {}, "stop")

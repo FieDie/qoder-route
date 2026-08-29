@@ -344,6 +344,10 @@ async def create_message(
         tried_ids.add(account.id)
         account_id = account.id
         pat_token = account.pat_token
+        machine_id = account.machine_id
+        if not await pool.begin_request(account_id):
+            continue
+        leased = True
 
         def start_gen():
             return direct_client.run_infer(
@@ -357,187 +361,192 @@ async def create_message(
                 body.max_tokens,
                 session_id,
                 tool_choice=tool_choice,
-                machine_id=account.machine_id,
+                machine_id=machine_id,
             )
 
-        if body.stream:
-            gen = start_gen()
-            try:
-                first = await gen.__anext__()
-            except StopAsyncIteration:
-                first = {"type": "error", "message": "empty upstream response"}
-
-            if first.get("type") == "error" and looks_like_transient_stream_error(first.get("message", "")):
-                logbus.push("info", "chat", f"anthropic: transient stream drop — retrying in 1s: {first.get('message', '')[:120]}", account_id=account_id, model=model_level)
-                await asyncio.sleep(1)
+        try:
+            if body.stream:
                 gen = start_gen()
                 try:
                     first = await gen.__anext__()
                 except StopAsyncIteration:
                     first = {"type": "error", "message": "empty upstream response"}
 
-            if first.get("type") == "error" and classify_chat_error(first.get("message", ""), first.get("error_scope")) == "model_queue":
-                queue = parse_model_queue(first.get("message", ""))
-                if queue is not None and queue.get("isQueued") is False:
-                    logbus.push("info", "chat", "anthropic: model queue empty (10605) — retrying in 3s", account_id=account_id, model=model_level)
-                    await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
+                if first.get("type") == "error" and looks_like_transient_stream_error(first.get("message", "")):
+                    logbus.push("info", "chat", f"anthropic: transient stream drop — retrying in 1s: {first.get('message', '')[:120]}", account_id=account_id, model=model_level)
+                    await asyncio.sleep(1)
                     gen = start_gen()
                     try:
                         first = await gen.__anext__()
                     except StopAsyncIteration:
                         first = {"type": "error", "message": "empty upstream response"}
 
-            if first.get("type") == "error":
-                msg = first.get("message", "upstream error")
-                if classify_chat_error(msg, first.get("error_scope")) == "quota":
+                if first.get("type") == "error" and classify_chat_error(first.get("message", ""), first.get("error_scope")) == "model_queue":
+                    queue = parse_model_queue(first.get("message", ""))
+                    if queue is not None and queue.get("isQueued") is False:
+                        logbus.push("info", "chat", "anthropic: model queue empty (10605) — retrying in 3s", account_id=account_id, model=model_level)
+                        await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
+                        gen = start_gen()
+                        try:
+                            first = await gen.__anext__()
+                        except StopAsyncIteration:
+                            first = {"type": "error", "message": "empty upstream response"}
+
+                if first.get("type") == "error":
+                    msg = first.get("message", "upstream error")
+                    if classify_chat_error(msg, first.get("error_scope")) == "quota":
+                        logbus.push("warn", "chat", "anthropic: quota exceeded, swapping account", account_id=account_id, model=model_level)
+                        await pool.mark_quota_exceeded(account_id)
+                        continue
+                    return await _handle_first_error(first, account_id, model_level)
+
+                leased = False
+                return _anthropic_sse_response(
+                    account_id,
+                    model_level,
+                    body.model or model_level,
+                    gen,
+                    first,
+                )
+
+            # --- non-streaming -------------------------------------------------
+            queue_retried = False
+            transient_retried = False
+            while True:
+                final_text = ""
+                final_thinking = ""
+                final_reasoning_signature = ""
+                final_tool_call_fragments: dict[int, dict] = {}
+                final_function_call: dict = {}
+                final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                final_finish_reason: str | None = None
+                error_msg = None
+                error_status = None
+                error_scope = None
+
+                async for event in start_gen():
+                    if event["type"] == "text":
+                        final_text += event["text"]
+                    elif event["type"] == "thinking":
+                        final_thinking += event["thinking"]
+                    elif event["type"] == "reasoning_signature":
+                        final_reasoning_signature += event["signature"]
+                    elif event["type"] == "tool_calls":
+                        _merge_tool_call_fragments(final_tool_call_fragments, event["tool_calls"])
+                    elif event["type"] == "function_call":
+                        fragment = event["function_call"]
+                        if fragment.get("name"):
+                            final_function_call["name"] = final_function_call.get("name", "") + fragment["name"]
+                        if fragment.get("arguments"):
+                            final_function_call["arguments"] = final_function_call.get("arguments", "") + fragment["arguments"]
+                    elif event["type"] == "done":
+                        u = event.get("usage") or {}
+                        final_finish_reason = event.get("finish_reason")
+                        final_usage = {
+                            "prompt_tokens": u.get("prompt_tokens", 0),
+                            "completion_tokens": u.get("completion_tokens", 0),
+                            "total_tokens": u.get("total_tokens", 0),
+                            "credits": u.get("credits") or u.get("total_credits") or 0.0,
+                        }
+                    elif event["type"] == "error":
+                        error_msg = event["message"]
+                        error_status = event.get("status")
+                        error_scope = event.get("error_scope")
+
+                if error_msg is not None and looks_like_transient_stream_error(error_msg) and not transient_retried:
+                    transient_retried = True
+                    logbus.push("info", "chat", f"anthropic: transient drop — retrying in 1s: {error_msg[:120]}", account_id=account_id, model=model_level)
+                    await asyncio.sleep(1)
+                    continue
+
+                if error_msg is not None and classify_chat_error(error_msg, error_scope) == "model_queue":
+                    queue = parse_model_queue(error_msg)
+                    if queue is not None and queue.get("isQueued") is False and not queue_retried:
+                        queue_retried = True
+                        logbus.push("info", "chat", "anthropic: model queue empty (10605) — retrying in 3s", account_id=account_id, model=model_level)
+                        await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
+                        continue
+                    logbus.push("warn", "chat", f"anthropic: model queued: {error_msg[:200]}", account_id=account_id, model=model_level)
+                    return _anthropic_error(error_status or 503, "api_error", error_msg)
+                break
+
+            if error_msg is not None:
+                error_kind = classify_chat_error(error_msg, error_scope)
+                if error_kind == "quota":
                     logbus.push("warn", "chat", "anthropic: quota exceeded, swapping account", account_id=account_id, model=model_level)
                     await pool.mark_quota_exceeded(account_id)
                     continue
-                return await _handle_first_error(first, account_id, model_level)
+                if error_kind == "infrastructure":
+                    logbus.push("error", "chat", f"anthropic: infrastructure error: {error_msg[:200]}", account_id=account_id, model=model_level)
+                    return _anthropic_error(error_status or 503, "api_error", error_msg)
+                logbus.push("error", "chat", f"anthropic: upstream error: {error_msg[:200]}", account_id=account_id, model=model_level)
+                await pool.mark_failure(account_id, error_msg)
+                return _anthropic_error(error_status or 502, "api_error", error_msg)
 
-            return _anthropic_sse_response(
+            await pool.mark_success(
                 account_id,
-                model_level,
-                body.model or model_level,
-                gen,
-                first,
+                final_usage.get("completion_tokens", 0),
+                final_usage.get("credits") or 0.0,
+            )
+            final_tool_calls = _finalize_tool_calls(final_tool_call_fragments)
+
+            content_blocks: list[dict] = []
+            if final_thinking:
+                thinking_block = {"type": "thinking", "thinking": final_thinking}
+                if final_reasoning_signature:
+                    thinking_block["signature"] = final_reasoning_signature
+                content_blocks.append(thinking_block)
+            content_blocks.append({"type": "text", "text": final_text})
+            for call in final_tool_calls:
+                try:
+                    tool_input = json.loads(call["function"]["arguments"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    tool_input = {"_raw": call["function"]["arguments"]}
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": call["id"],
+                    "name": call["function"]["name"],
+                    "input": tool_input,
+                })
+            if final_function_call:
+                try:
+                    tool_input = json.loads(final_function_call.get("arguments") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    tool_input = {"_raw": final_function_call.get("arguments")}
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": f"toolu_{uuid.uuid4().hex[:24]}",
+                    "name": final_function_call.get("name", ""),
+                    "input": tool_input,
+                })
+
+            has_tools = bool(final_tool_calls or final_function_call)
+            logbus.push(
+                "info", "chat", "anthropic completion ok",
+                account_id=account_id, model=model_level,
+                prompt_tokens=final_usage.get("prompt_tokens", 0),
+                completion_tokens=final_usage.get("completion_tokens", 0),
+                thinking_chars=len(final_thinking),
+                tool_calls=len(final_tool_calls) + (1 if final_function_call else 0),
+                credits=final_usage.get("credits", 0),
             )
 
-        # --- non-streaming -------------------------------------------------
-        queue_retried = False
-        transient_retried = False
-        while True:
-            final_text = ""
-            final_thinking = ""
-            final_reasoning_signature = ""
-            final_tool_call_fragments: dict[int, dict] = {}
-            final_function_call: dict = {}
-            final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            final_finish_reason: str | None = None
-            error_msg = None
-            error_status = None
-            error_scope = None
-
-            async for event in start_gen():
-                if event["type"] == "text":
-                    final_text += event["text"]
-                elif event["type"] == "thinking":
-                    final_thinking += event["thinking"]
-                elif event["type"] == "reasoning_signature":
-                    final_reasoning_signature += event["signature"]
-                elif event["type"] == "tool_calls":
-                    _merge_tool_call_fragments(final_tool_call_fragments, event["tool_calls"])
-                elif event["type"] == "function_call":
-                    fragment = event["function_call"]
-                    if fragment.get("name"):
-                        final_function_call["name"] = final_function_call.get("name", "") + fragment["name"]
-                    if fragment.get("arguments"):
-                        final_function_call["arguments"] = final_function_call.get("arguments", "") + fragment["arguments"]
-                elif event["type"] == "done":
-                    u = event.get("usage") or {}
-                    final_finish_reason = event.get("finish_reason")
-                    final_usage = {
-                        "prompt_tokens": u.get("prompt_tokens", 0),
-                        "completion_tokens": u.get("completion_tokens", 0),
-                        "total_tokens": u.get("total_tokens", 0),
-                        "credits": u.get("credits") or u.get("total_credits") or 0.0,
-                    }
-                elif event["type"] == "error":
-                    error_msg = event["message"]
-                    error_status = event.get("status")
-                    error_scope = event.get("error_scope")
-
-            if error_msg is not None and looks_like_transient_stream_error(error_msg) and not transient_retried:
-                transient_retried = True
-                logbus.push("info", "chat", f"anthropic: transient drop — retrying in 1s: {error_msg[:120]}", account_id=account_id, model=model_level)
-                await asyncio.sleep(1)
-                continue
-
-            if error_msg is not None and classify_chat_error(error_msg, error_scope) == "model_queue":
-                queue = parse_model_queue(error_msg)
-                if queue is not None and queue.get("isQueued") is False and not queue_retried:
-                    queue_retried = True
-                    logbus.push("info", "chat", "anthropic: model queue empty (10605) — retrying in 3s", account_id=account_id, model=model_level)
-                    await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
-                    continue
-                logbus.push("warn", "chat", f"anthropic: model queued: {error_msg[:200]}", account_id=account_id, model=model_level)
-                return _anthropic_error(error_status or 503, "api_error", error_msg)
-            break
-
-        if error_msg is not None:
-            error_kind = classify_chat_error(error_msg, error_scope)
-            if error_kind == "quota":
-                logbus.push("warn", "chat", "anthropic: quota exceeded, swapping account", account_id=account_id, model=model_level)
-                await pool.mark_quota_exceeded(account_id)
-                continue
-            if error_kind == "infrastructure":
-                logbus.push("error", "chat", f"anthropic: infrastructure error: {error_msg[:200]}", account_id=account_id, model=model_level)
-                return _anthropic_error(error_status or 503, "api_error", error_msg)
-            logbus.push("error", "chat", f"anthropic: upstream error: {error_msg[:200]}", account_id=account_id, model=model_level)
-            await pool.mark_failure(account_id, error_msg)
-            return _anthropic_error(error_status or 502, "api_error", error_msg)
-
-        await pool.mark_success(
-            account_id,
-            final_usage.get("completion_tokens", 0),
-            final_usage.get("credits") or 0.0,
-        )
-        final_tool_calls = _finalize_tool_calls(final_tool_call_fragments)
-
-        content_blocks: list[dict] = []
-        if final_thinking:
-            thinking_block = {"type": "thinking", "thinking": final_thinking}
-            if final_reasoning_signature:
-                thinking_block["signature"] = final_reasoning_signature
-            content_blocks.append(thinking_block)
-        content_blocks.append({"type": "text", "text": final_text})
-        for call in final_tool_calls:
-            try:
-                tool_input = json.loads(call["function"]["arguments"] or "{}")
-            except (json.JSONDecodeError, TypeError):
-                tool_input = {"_raw": call["function"]["arguments"]}
-            content_blocks.append({
-                "type": "tool_use",
-                "id": call["id"],
-                "name": call["function"]["name"],
-                "input": tool_input,
-            })
-        if final_function_call:
-            try:
-                tool_input = json.loads(final_function_call.get("arguments") or "{}")
-            except (json.JSONDecodeError, TypeError):
-                tool_input = {"_raw": final_function_call.get("arguments")}
-            content_blocks.append({
-                "type": "tool_use",
-                "id": f"toolu_{uuid.uuid4().hex[:24]}",
-                "name": final_function_call.get("name", ""),
-                "input": tool_input,
-            })
-
-        has_tools = bool(final_tool_calls or final_function_call)
-        logbus.push(
-            "info", "chat", "anthropic completion ok",
-            account_id=account_id, model=model_level,
-            prompt_tokens=final_usage.get("prompt_tokens", 0),
-            completion_tokens=final_usage.get("completion_tokens", 0),
-            thinking_chars=len(final_thinking),
-            tool_calls=len(final_tool_calls) + (1 if final_function_call else 0),
-            credits=final_usage.get("credits", 0),
-        )
-
-        return {
-            "id": f"msg_{uuid.uuid4().hex[:24]}",
-            "type": "message",
-            "role": "assistant",
-            "model": body.model or model_level,
-            "content": content_blocks,
-            "stop_reason": _stop_reason_openai_to_anthropic(final_finish_reason, has_tools),
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": final_usage.get("prompt_tokens", 0),
-                "output_tokens": final_usage.get("completion_tokens", 0),
-            },
-        }
+            return {
+                "id": f"msg_{uuid.uuid4().hex[:24]}",
+                "type": "message",
+                "role": "assistant",
+                "model": body.model or model_level,
+                "content": content_blocks,
+                "stop_reason": _stop_reason_openai_to_anthropic(final_finish_reason, has_tools),
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": final_usage.get("prompt_tokens", 0),
+                    "output_tokens": final_usage.get("completion_tokens", 0),
+                },
+            }
+        finally:
+            if leased:
+                await pool.end_request(account_id)
 
     return _anthropic_error(
         503,
@@ -735,6 +744,8 @@ def _anthropic_sse_response(
                 "type": "error",
                 "error": {"type": "api_error", "message": str(e)},
             })
+        finally:
+            await pool.end_request(account_id)
 
         # flush accumulated tool calls as tool_use blocks
         for call in _finalize_tool_calls(tool_fragments):

@@ -145,10 +145,12 @@ function resultBody(rr) {
   return Buffer.from(bytes);
 }
 
-const COSY_VERSION = "1.1.26";
-// Exact Qoder CLI 1.1.17 client identity.  The numeric string is a routing
-// discriminator used by the signed inference context; "cli" here can leave
-// newer catalog models on a legacy upstream node.
+// Fallback only — the Python router passes the live npm-resolved Cosy/CLI
+// version on every /infer call so this does not need hand updates.
+const DEFAULT_COSY_VERSION = "1.1.36";
+// Client identity for the signed inference context.  The numeric client_type
+// is a routing discriminator; "cli" here can leave newer catalog models on a
+// legacy upstream node.
 const CLIENT_META = JSON.stringify({ client_type: "5", business_product: "cli", business_type: "agent", scene: "assistant" });
 
 const contexts = new Map();
@@ -158,9 +160,19 @@ function freeContext(ctx) {
   if (ctx?.ptr) wasm.__wbg_qodercontext_free(ctx.ptr, 0);
 }
 
-function getContext(jt, uid, machineId) {
-  // Keep contexts isolated by job token and router machine identity.
-  const cacheKey = `${jt}\0${machineId}`;
+function normalizeCosyVersion(value) {
+  if (typeof value !== "string") return DEFAULT_COSY_VERSION;
+  const trimmed = value.trim();
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(trimmed)
+    ? trimmed
+    : DEFAULT_COSY_VERSION;
+}
+
+function getContext(jt, uid, machineId, cosyVersion) {
+  const version = normalizeCosyVersion(cosyVersion);
+  // Isolate by job token, machine identity, and Cosy version — a version
+  // bump must not reuse a WASM context built under the old string.
+  const cacheKey = `${jt}\0${machineId}\0${version}`;
   let ctx = contexts.get(cacheKey);
   if (ctx && ctx.uid === uid) {
     // Refresh insertion order so the Map doubles as a small LRU cache.
@@ -186,7 +198,7 @@ function getContext(jt, uid, machineId) {
     encrypt_user_info: raf.encrypt_user_info || "",
     key: raf.key || "",
   });
-  const ptr = newContext(machineId, COSY_VERSION, userInfo, CLIENT_META);
+  const ptr = newContext(machineId, version, userInfo, CLIENT_META);
   while (contexts.size >= MAX_CONTEXTS) {
     const oldestKey = contexts.keys().next().value;
     const oldest = contexts.get(oldestKey);
@@ -215,8 +227,8 @@ const server = http.createServer(async (req, res) => {
     const input = raw.length ? JSON.parse(raw.toString()) : {};
 
     if (req.url === "/infer" && req.method === "POST") {
-      const { jt, uid, machine_id, base_url, body_json, model_key, model_source } = input;
-      const ctx = getContext(jt, uid, machine_id);
+      const { jt, uid, machine_id, base_url, body_json, model_key, model_source, cosy_version } = input;
+      const ctx = getContext(jt, uid, machine_id, cosy_version);
       const rr = prepareInferRequest(ctx, base_url, body_json, model_key, model_source ?? "system");
       const out = { url: resultUrl(rr), headers: resultHeaders(rr), body_b64: resultBody(rr).toString("base64") };
       wasm.__wbg_requestresult_free(rr, 0);
@@ -231,7 +243,9 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    if (req.url === "/health") return send(200, { ok: true, contexts: contexts.size });
+    if (req.url === "/health") {
+      return send(200, { ok: true, contexts: contexts.size, default_cosy_version: DEFAULT_COSY_VERSION });
+    }
 
     send(404, { error: "not found" });
   } catch (e) {

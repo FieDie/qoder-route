@@ -19,7 +19,7 @@ from app.services.quota_service import (
     parse_model_queue,
     MODEL_QUEUE_ERROR_CODE,
 )
-from app.services import settings_service, signer_service
+from app.services import qoder_version, settings_service, signer_service
 from app.services.model_catalog import MODEL_CATALOG
 
 logger = logging.getLogger("qoderroute.direct")
@@ -77,8 +77,8 @@ MODEL_KEY_MAP = {
 _FAST_CAPABLE = {"kmodel"}
 
 # Context window defaults used by the direct client.  ``auto`` only advertises
-# 128K/180K in the Qoder 1.1.17 catalog; the named long-context models accept
-# 1M, except Kimi K2.7 Code which has one fixed 256K window.
+# the smaller catalog windows; the named long-context models accept 1M, except
+# Kimi K2.7 Code which has one fixed 256K window.
 _DEFAULT_CONTEXT_WINDOW = 1_000_000
 _CONTEXT_WINDOW_BY_MODEL = {
     str(entry["key"]): int(
@@ -404,7 +404,7 @@ def _build_body(messages: list[dict], model_key: str, tools: Optional[list[dict]
         # gateway returns `[FAIL]node:oa_qwen-plus... Execution failed: null`.
         "business": {
             "product": "cli",
-            "version": "1.1.26",
+            "version": qoder_version.get(),
             "type": "agent",
             "id": str(uuid.uuid4()),
             "name": _business_name(last_user_text),
@@ -574,6 +574,7 @@ async def run_infer(
     request_system_prompt, request_chat_context = _context_strings(messages)
     effective_effort = _normalize_effort(reasoning_effort, model_key)
     infer_base = _resolve_infer_base()
+    cosy_version = qoder_version.get()
 
     try:
         client = _get_signer()
@@ -588,6 +589,7 @@ async def run_infer(
                 "body_json": body_json,
                 "model_key": model_key,
                 "model_source": "system",
+                "cosy_version": cosy_version,
             },
         )
         if r.status_code != 200:
@@ -611,7 +613,7 @@ async def run_infer(
         # qoder-server-request injects these identity headers after the WASM
         # signer returns.  The first two normally already exist; MachineOS is
         # transport-owned and therefore must be supplied here explicitly.
-        headers.setdefault("Cosy-Version", "1.1.26")
+        headers.setdefault("Cosy-Version", cosy_version)
         headers.setdefault("Cosy-ClientType", "5")
         headers.setdefault("Cosy-MachineOS", "x86_64_linux")
         headers.setdefault("User-Agent", QODER_INFER_USER_AGENT)
@@ -824,17 +826,24 @@ async def run_infer(
                     event_lines = []
                     stream_terminal = stream_terminal or saw_done or saw_finish
                     for event in events:
-                        stream_failed = stream_failed or event.get("type") == "error"
                         yield event
-                    if saw_done:
+                        if event.get("type") == "error":
+                            # Stop reading after the first error — quota/queue
+                            # frames are often followed by a hung connection
+                            # that would otherwise burn the full upstream timeout.
+                            stream_failed = True
+                            break
+                    if stream_failed or saw_done:
                         break
                 else:
                     if event_lines:
                         events, saw_done, saw_finish = await _decode_sse_event(event_lines)
                         stream_terminal = stream_terminal or saw_done or saw_finish
                         for event in events:
-                            stream_failed = stream_failed or event.get("type") == "error"
                             yield event
+                            if event.get("type") == "error":
+                                stream_failed = True
+                                break
             except Exception as e:
                 # Connection dropped mid-stream - report error without waiting full timeout
                 stream_failed = True
@@ -844,7 +853,7 @@ async def run_infer(
                     "status": 502,
                 }
                 return
-            
+
             if stream_failed:
                 return
             if not stream_terminal:

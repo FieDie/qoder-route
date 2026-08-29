@@ -101,8 +101,6 @@ function StatusFooter() {
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
-  // Key page transitions by top-level section only, so sub-routes like
-  // /accounts/available → /accounts/exhausted update in place.
   const sectionKey = '/' + (location.pathname.split('/')[1] ?? '')
 
   return (
@@ -188,8 +186,8 @@ export function AppLayout() {
               <Routes location={location}>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/accounts" element={<Navigate to="/accounts/available" replace />} />
-                <Route path="/accounts/:tab" element={<AccountManager />} />
+                <Route path="/accounts" element={<AccountManager />} />
+                <Route path="/accounts/*" element={<Navigate to="/accounts" replace />} />
                 {WorkerPage && (
                   <Route
                     path="/worker"

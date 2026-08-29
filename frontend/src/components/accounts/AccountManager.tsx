@@ -1,6 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
 import { usePoolStatus, useAddAccount, useDeleteAccount, useRefreshQuota, fetchAccountPat, useSettings, useAvailableAccounts, useExhaustedAccounts } from '../../hooks/useApi'
 import { StatusBadge, Card, Modal, Skeleton, EmptyState } from '../ui/GlassPanel'
 import { timeAgo, planEndInfo } from '../../lib/utils'
@@ -249,11 +248,7 @@ export function AccountManager() {
   const [quotaRefreshedId, setQuotaRefreshedId] = useState<number | null>(null)
   const [pendingDelete, setPendingDelete] = useState<Account | null>(null)
 
-  // Tab state lives in the URL — survives page refresh
-  const { tab } = useParams<{ tab: string }>()
-  const navigate = useNavigate()
-  const activeTab: 'available' | 'exhausted' = tab === 'exhausted' ? 'exhausted' : 'available'
-  const setActiveTab = (t: 'available' | 'exhausted') => navigate(`/accounts/${t}`)
+  const [activeTab, setActiveTab] = useState<'available' | 'exhausted'>('available')
 
   // Get current data based on active tab
   const accountsData = activeTab === 'available' ? availableData : exhaustedData

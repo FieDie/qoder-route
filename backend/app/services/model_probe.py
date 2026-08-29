@@ -142,31 +142,38 @@ async def probe_all() -> None:
             _last_run = time.time()
             return
 
-        for display, level in probe_models:
-            result = await _probe_one(pat, display, level, machine_id=machine_id)
-            _results[level] = result
-            if result["alive"]:
-                await pool.mark_success(
-                    account_id,
-                    int(result.get("completion_tokens") or 0),
-                    float(result.get("credits") or 0.0),
-                )
-            elif looks_like_quota_error(result.get("error") or ""):
-                await pool.mark_quota_exceeded(account_id)
+        if not await pool.begin_request(account_id):
+            logger.warning("Model probe skipped: account became unavailable")
+            _last_run = time.time()
+            return
+        try:
+            for display, level in probe_models:
+                result = await _probe_one(pat, display, level, machine_id=machine_id)
+                _results[level] = result
+                if result["alive"]:
+                    await pool.mark_success(
+                        account_id,
+                        int(result.get("completion_tokens") or 0),
+                        float(result.get("credits") or 0.0),
+                    )
+                elif looks_like_quota_error(result.get("error") or ""):
+                    await pool.mark_quota_exceeded(account_id)
+                    logbus.push(
+                        "warn", "probe",
+                        f"probe {display}: quota exceeded, parking account",
+                        model=level, account_id=account_id,
+                    )
+                    break
                 logbus.push(
-                    "warn", "probe",
-                    f"probe {display}: quota exceeded, parking account",
-                    model=level, account_id=account_id,
+                    "info" if result["alive"] else "warn", "probe",
+                    f"probe {display}: {'alive' if result['alive'] else 'error'} "
+                    f"{result['tps']} tps",
+                    model=level, tps=result["tps"], alive=result["alive"],
+                    credits=result.get("credits") or 0.0,
                 )
-                break
-            logbus.push(
-                "info" if result["alive"] else "warn", "probe",
-                f"probe {display}: {'alive' if result['alive'] else 'error'} "
-                f"{result['tps']} tps",
-                model=level, tps=result["tps"], alive=result["alive"],
-                credits=result.get("credits") or 0.0,
-            )
-        _last_run = time.time()
+            _last_run = time.time()
+        finally:
+            await pool.end_request(account_id)
     finally:
         _probing = False
 

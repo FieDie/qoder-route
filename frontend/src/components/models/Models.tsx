@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { BrainCircuit, Coins, Eye, Layers3 } from 'lucide-react'
 import { Card, EmptyState, HeaderBadge, Skeleton } from '../ui/GlassPanel'
@@ -14,7 +15,7 @@ const rise = {
   show: { opacity: 1, y: 0, transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] } },
 }
 
-const GRID = 'md:grid-cols-[minmax(180px,1.1fr)_minmax(150px,0.9fr)_minmax(210px,1.1fr)_minmax(140px,0.9fr)_88px]'
+const GRID = 'md:grid-cols-[minmax(180px,1.1fr)_minmax(150px,0.9fr)_minmax(250px,1.2fr)_minmax(140px,0.9fr)_88px]'
 
 function factorLabel(value: number) {
   if (value === 0) return '0× · free'
@@ -29,18 +30,27 @@ function contextLabel(model: ModelCatalogEntry) {
   return windows.map(formatContextTokens).join(' / ')
 }
 
+function CapChip({ icon, label }: { icon: ReactNode; label: string }) {
+  return (
+    <span className="chip chip-muted whitespace-nowrap text-neutral-300">
+      <span className="inline-flex shrink-0 opacity-70 [&_svg]:block">{icon}</span>
+      {label}
+    </span>
+  )
+}
+
 function CapabilityChips({ model }: { model: ModelCatalogEntry }) {
   return (
     <>
-      <span className="chip chip-muted">{model.kind === 'tier' ? 'Tier' : 'Model'}</span>
+      <span className="chip chip-muted whitespace-nowrap">{model.kind === 'tier' ? 'Tier' : 'Model'}</span>
       {model.is_reasoning && (
-        <span className="chip chip-outline"><BrainCircuit size={10} /> Reasoning</span>
+        <CapChip icon={<BrainCircuit size={11} strokeWidth={2} />} label="Reasoning" />
       )}
       {!model.is_reasoning && model.supports_thinking && (
-        <span className="chip chip-outline"><BrainCircuit size={10} /> Thinking</span>
+        <CapChip icon={<BrainCircuit size={11} strokeWidth={2} />} label="Thinking" />
       )}
       {model.is_vision && (
-        <span className="chip chip-outline"><Eye size={10} /> Vision</span>
+        <CapChip icon={<Eye size={11} strokeWidth={2} />} label="Vision" />
       )}
     </>
   )
@@ -66,7 +76,7 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
         {model.key}
       </div>
 
-      <div className="hidden md:flex items-center gap-1.5 flex-wrap">
+      <div className="hidden md:flex items-center gap-1.5 flex-nowrap min-w-0">
         <CapabilityChips model={model} />
       </div>
 

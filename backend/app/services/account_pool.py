@@ -19,10 +19,30 @@ from app.services import quota_service, logbus
 
 logger = logging.getLogger("qoderroute.pool")
 
+# When an account is down to its last credits, only one in-flight request may
+# ride it. Extra concurrent starts spill to the next account (if any) so a
+# burst does not all die on the same almost-exhausted PAT.
+_NEAR_EMPTY_CREDITS = 15.0
+
 
 def _utcnow() -> datetime:
     """Naive UTC datetime — matches what SQLite stores/returns."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _row_is_routable(acc: Account, now: Optional[datetime] = None) -> bool:
+    """Fresh check: still active, available, and not parked/exhausted."""
+    if now is None:
+        now = _utcnow()
+    if not acc.is_active or not acc.is_available or acc.is_quota_exceeded:
+        return False
+    if acc.cooldown_until is not None and acc.cooldown_until > now:
+        return False
+    if acc.consecutive_failures >= settings.max_consecutive_failures:
+        return False
+    if acc.quota_remaining is not None and acc.quota_remaining <= 0:
+        return False
+    return True
 
 
 class AccountPool:
@@ -31,6 +51,9 @@ class AccountPool:
 
     def __init__(self):
         self._last_refresh: datetime = datetime.min
+        self._refresh_lock = asyncio.Lock()
+        self._in_flight_lock = asyncio.Lock()
+        self._in_flight: dict[int, int] = {}
 
     @classmethod
     async def get_instance(cls) -> "AccountPool":
@@ -40,6 +63,28 @@ class AccountPool:
                     cls._instance = cls()
                     await cls._instance._refresh()
         return cls._instance
+
+    async def begin_request(self, account_id: int) -> bool:
+        """Claim an account for one in-flight request.
+
+        Re-checks DB routability so a concurrent park between selection and
+        upstream start cannot send the client to a dead PAT.
+        """
+        async with async_session() as session:
+            acc = await session.get(Account, account_id)
+            if not acc or not _row_is_routable(acc):
+                return False
+        async with self._in_flight_lock:
+            self._in_flight[account_id] = self._in_flight.get(account_id, 0) + 1
+        return True
+
+    async def end_request(self, account_id: int) -> None:
+        async with self._in_flight_lock:
+            n = self._in_flight.get(account_id, 0) - 1
+            if n <= 0:
+                self._in_flight.pop(account_id, None)
+            else:
+                self._in_flight[account_id] = n
 
     async def _refresh(self):
         """Recalculate is_available flags based on cooldown state.
@@ -81,7 +126,11 @@ class AccountPool:
         exclude_ids: Optional[set[int]] = None,
     ) -> Optional[Account]:
         """Fill-first routing: the first available account WITH quota wins.
-        Requests stick to it until it exhausts/fails, then the next takes over."""
+
+        Near exhaustion, only one in-flight request may stay on the dying
+        account; additional concurrent starts spill to the next PAT so a
+        burst does not all fail together.
+        """
         await self._refresh_if_stale()
 
         now = _utcnow()
@@ -109,6 +158,18 @@ class AccountPool:
         if not available:
             return None
 
+        async with self._in_flight_lock:
+            inflight = dict(self._in_flight)
+
+        for idx, acc in enumerate(available):
+            remaining = acc.quota_remaining
+            near_empty = (
+                isinstance(remaining, (int, float))
+                and remaining <= _NEAR_EMPTY_CREDITS
+            )
+            if near_empty and inflight.get(acc.id, 0) > 0 and idx + 1 < len(available):
+                continue
+            return acc
         return available[0]
 
     async def refresh_quota(self, account_id: int) -> Optional[dict]:
@@ -334,14 +395,32 @@ class AccountPool:
     async def mark_failure(self, account_id: int, error_message: str = ""):
         try:
             async with async_session() as session:
-                acc = await session.get(Account, account_id)
-                if not acc:
+                # Atomic failure increment — concurrent errors on the same
+                # fill-first account must not lose updates.
+                result = await session.execute(
+                    update(Account)
+                    .where(Account.id == account_id)
+                    .values(
+                        consecutive_failures=func.coalesce(Account.consecutive_failures, 0) + 1,
+                        last_error_at=_utcnow(),
+                        last_error_message=(error_message or "")[:512],
+                    )
+                    .returning(
+                        Account.consecutive_failures,
+                        Account.is_quota_exceeded,
+                        Account.name,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                row = result.first()
+                if not row:
                     return
 
-                new_failures = acc.consecutive_failures + 1
+                new_failures = int(row[0] or 0)
+                is_exceeded = bool(row[1])
+                name = row[2]
                 cooldown_until = None
                 is_available = True
-
                 if new_failures >= settings.max_consecutive_failures:
                     backoff = 2 ** (new_failures - settings.max_consecutive_failures + 1)
                     cooldown_until = _utcnow() + timedelta(
@@ -350,15 +429,19 @@ class AccountPool:
                     is_available = False
                     logger.warning(
                         "Account %s cooldown until %s (%d failures)",
-                        acc.name, cooldown_until, new_failures,
+                        name, cooldown_until, new_failures,
                     )
 
-                acc.consecutive_failures = new_failures
-                acc.last_error_at = _utcnow()
-                acc.last_error_message = error_message[:512]
-                acc.cooldown_until = cooldown_until
-                # An exhausted account stays parked — failures don't revive it.
-                acc.is_available = is_available and not acc.is_quota_exceeded
+                await session.execute(
+                    update(Account)
+                    .where(Account.id == account_id)
+                    .values(
+                        cooldown_until=cooldown_until,
+                        # Exhausted accounts stay parked — failures don't revive them.
+                        is_available=is_available and not is_exceeded,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
                 await session.commit()
         except StaleDataError:
             logger.warning(
@@ -454,8 +537,12 @@ class AccountPool:
 
     async def _refresh_if_stale(self):
         now = _utcnow()
-        if (now - self._last_refresh).total_seconds() > settings.qoder_poll_interval:
-            await self._refresh()
+        if (now - self._last_refresh).total_seconds() <= settings.qoder_poll_interval:
+            return
+        async with self._refresh_lock:
+            now = _utcnow()
+            if (now - self._last_refresh).total_seconds() > settings.qoder_poll_interval:
+                await self._refresh()
 
 
 pool = AccountPool()

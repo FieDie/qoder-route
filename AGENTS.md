@@ -33,6 +33,7 @@ QoderRoute/
 │   │   │   ├── model_catalog.py         # Canonical model keys, credit factors and capabilities
 │   │   │   ├── model_probe.py          # Periodic TPS probes per model level
 │   │   │   ├── quota_service.py        # Job token exchange, plan/quota/userinfo fetch from openapi.qoder.sh
+│   │   │   ├── qoder_version.py        # Cosy/CLI version from npm @qoder-ai/qodercli (auto-refresh)
 │   │   │   ├── settings_service.py     # In-memory cache of DB-backed settings with _DEFAULTS registry
 │   │   │   ├── signer_service.py       # Signer singleton management (ensure_signer, supervisor, post_to_signer)
 │   │   │   ├── worker_runner.py        # [gitignored; not in public build] optional worker runner
@@ -42,7 +43,7 @@ QoderRoute/
 │   │   └── main.py                   # FastAPI app factory, lifespan, static mounting, router registration
 │   ├── data/                         # SQLite DB, logs, pidfiles (gitignored)
 │   ├── signer/
-│   │   ├── qoder_auth_wasm.wasm      # WASM auth module (Qoder CLI 1.1.17 extracted), shipped in-repo
+│   │   ├── qoder_auth_wasm.wasm      # WASM auth module shipped in-repo for the Node signer
 │   │   ├── signer_server.mjs         # Node.js HTTP server on 127.0.0.1:8123 (WASM glue)
 │   │   └── signer.log/pid/.start.lock (runtime files)
 │   ├── tests/                        # [gitignored, local only] pytest regression suite
@@ -211,6 +212,12 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 - **No Per-Account Disable**  
   Accounts cannot be toggled inactive. Startup backfill forces `is_active = 1` for any legacy disabled rows; the column remains only so existing pool filters keep working.
+
+- **Near-Exhaustion Spill Under Concurrency**  
+  Fill-first still sticks to one PAT while healthy. When `quota_remaining <= 15` and that account already has an in-flight request, additional starts spill to the next available account. `begin_request` re-checks DB routability before upstream work; SSE reading stops on the first upstream error so hung post-quota connections do not burn the 300s timeout.
+
+- **Cosy/CLI Version Auto-Refresh**  
+  Do not hardcode `Cosy-Version` / `business.version` / `qoder/<ver>` User-Agent. `qoder_version.py` fetches `@qoder-ai/qodercli` latest from npm on startup and every 6 hours, then feeds `quota_service`, `direct_client`, and the signer `/infer` payload (`cosy_version`). Fallback stays in memory if npm is unreachable. `/api/health` exposes `qoder_cli_version` + source.
 
 - **Context Window Parameter Placement**  
   The `context_length` parameter inside the request body sets the reservation; putting the same value in `model_config.context_window` has no effect on the inference path. Use only `parameters.context_length`.

@@ -1,3 +1,4 @@
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
@@ -5,8 +6,17 @@ from app.core.config import settings
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30},
 )
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _sqlite_on_connect(dbapi_conn, _connection_record):
+    """WAL + busy_timeout so concurrent mark_success / routing writes don't stall."""
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
