@@ -132,10 +132,11 @@ The build output is placed in `frontend/dist`. The production backend serves the
 
 ```bash
 cd backend
-./start.sh
+./start.sh          # Linux / macOS
+# start.bat         # Windows
 ```
 
-The server binds to `0.0.0.0:8010`. Use `./restart.sh` for a graceful restart that preserves the signer process.
+The server binds to `0.0.0.0:8010`. Use `./restart.sh` (or `restart.bat` on Windows) for a graceful restart that preserves the signer process.
 
 **Development (auto-reload):**
 

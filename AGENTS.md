@@ -53,9 +53,9 @@ QoderRoute/
 │   │   ├── test_signer_resilience.py
 │   │   └── test_thinking_regression.py
 │   ├── requirements.txt              # Python deps: fastapi, uvicorn, sqlalchemy, httpx, etc.
-│   ├── restart.sh                    # Graceful restart script (waits for old process to exit)
+│   ├── restart.sh / restart.bat      # Graceful restart (waits for old process to exit; .bat = Windows)
 │   ├── run.py                        # Dev mode: uvicorn.run with reload if DEBUG
-│   └── start.sh                      # Prod start script (no reload, flock-based guards)
+│   └── start.sh / start.bat          # Prod start (no reload; flock / mkdir lock guards)
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
@@ -96,13 +96,15 @@ QoderRoute/
 
 - **Prod Start (no reload):**  
   ```bash
-  cd backend && ./start.sh
+  cd backend && ./start.sh      # Linux / macOS
+  cd backend && start.bat       # Windows
   ```
   Runs `uvicorn app.main:app` bound to `0.0.0.0:8010`, writes logs to `data/server.log`.
 
 - **Graceful Restart:**  
   ```bash
-  cd backend && ./restart.sh
+  cd backend && ./restart.sh    # Linux / macOS
+  cd backend && restart.bat     # Windows
   ```
   Waits for the existing backend process to fully exit (active streams drain), refuses overlapping backends. The signer is a host-level singleton and survives this restart. Optional env `QODERROUTE_FORCE_RESTART_AFTER=N` to force-kill after N seconds.
 
