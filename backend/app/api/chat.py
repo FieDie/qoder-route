@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.schemas import ChatCompletionRequest, ChatCompletionResponse
 from app.services.account_pool import pool
-from app.services import direct_client, logbus
+from app.services import direct_client
+from app.services.request_log import RequestTrace, log_outcome
 from app.services.qoder_client import resolve_model_level
 from app.services.quota_service import (
     looks_like_quota_error,
@@ -142,6 +143,7 @@ async def chat_completions(
     session_id = _client_session_id(request.headers)
     tried_ids: set[int] = set()
     model_level = _resolve_level(body.model)
+    trace = RequestTrace("openai", model_level)
 
     for _ in range(MAX_SWAP_ATTEMPTS):
         account = await pool.get_next_account(
@@ -160,6 +162,9 @@ async def chat_completions(
         if not await pool.begin_request(account_id):
             continue
         leased = True
+        trace.set_account(account)
+        label = getattr(account, "name", None) or f"#{account.id}"
+        trace.emit("info", f"started · {label}", phase="start")
 
         def start_gen():
             return direct_client.run_infer(
@@ -189,7 +194,7 @@ async def chat_completions(
 
                 # Flaky connection drop on the very first event — retry once.
                 if first.get("type") == "error" and looks_like_transient_stream_error(first.get("message", "")):
-                    logbus.push("info", "chat", f"transient stream drop — retrying in 1s: {first.get('message', '')[:120]}", account_id=account_id, model=model_level)
+                    trace.emit("info", f"transient stream drop — retrying in 1s: {first.get('message', '')[:120]}", phase="retry")
                     await asyncio.sleep(1)
                     gen = start_gen()
                     try:
@@ -202,7 +207,7 @@ async def chat_completions(
                 if first.get("type") == "error" and classify_chat_error(first.get("message", ""), first.get("error_scope")) == "model_queue":
                     queue = parse_model_queue(first.get("message", ""))
                     if queue is not None and queue.get("isQueued") is False:
-                        logbus.push("info", "chat", "model queue empty (10605, isQueued=false) — retrying in 3s", account_id=account_id, model=model_level)
+                        trace.emit("info", "model queue empty (10605, isQueued=false) — retrying in 3s", phase="retry")
                         await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
                         gen = start_gen()
                         try:
@@ -214,24 +219,23 @@ async def chat_completions(
                     msg = first.get("message", "upstream error")
                     error_kind = classify_chat_error(msg, first.get("error_scope"))
                     if error_kind == "infrastructure":
-                        logbus.push("error", "chat", f"local infrastructure error: {msg[:200]}", account_id=account_id, model=model_level)
+                        trace.emit("error", f"local infrastructure error: {msg[:200]}", phase="error", outcome=log_outcome(error_kind, msg))
                         raise HTTPException(status_code=first.get("status") or 503, detail=msg)
                     if error_kind == "model_queue":
                         # 10605: model queued upstream — don't fail the account.
-                        logbus.push("warn", "chat", f"model queued: {msg[:200]}", account_id=account_id, model=model_level)
+                        trace.emit("warn", f"model queued: {msg[:200]}", phase="error", outcome="queue")
                         raise HTTPException(status_code=first.get("status") or 503, detail=msg)
                     if error_kind == "quota":
-                        logbus.push("warn", "chat", "quota exceeded, swapping account", account_id=account_id, model=model_level)
+                        trace.emit("warn", "quota exceeded, swapping account", phase="swap", outcome="quota")
                         await pool.mark_quota_exceeded(account_id)
                         continue  # auto-swap to the next account
-                    logbus.push("error", "chat", f"upstream error: {msg[:200]}", account_id=account_id, model=model_level)
+                    trace.emit("error", f"upstream error: {msg[:200]}", phase="error", outcome="account")
                     await pool.mark_failure(account_id, msg)
                     raise HTTPException(status_code=first.get("status") or 502, detail=msg)
 
                 leased = False  # ownership moves to the SSE response
                 return _sse_response(
-                    account_id,
-                    model_level,
+                    trace,
                     body.model or model_level,
                     gen,
                     first,
@@ -247,9 +251,7 @@ async def chat_completions(
                 final_tool_call_fragments: dict[int, dict] = {}
                 final_function_call: dict = {}
                 tool_call_chunks = 0
-                tool_call_entries = 0
                 final_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-                final_diagnostics: dict = {}
                 final_finish_reason: str | None = None
                 error_msg = None
                 error_status = None
@@ -257,8 +259,10 @@ async def chat_completions(
 
                 async for event in start_gen():
                     if event["type"] == "text":
+                        trace.mark_first_token()
                         final_text += event["text"]
                     elif event["type"] == "thinking":
+                        trace.mark_first_token()
                         final_thinking += event["thinking"]
                     elif event["type"] == "reasoning_signature":
                         final_reasoning_signature += event["signature"]
@@ -266,7 +270,6 @@ async def chat_completions(
                         final_reasoning_item = event["reasoning_item"]
                     elif event["type"] == "tool_calls":
                         tool_call_chunks += 1
-                        tool_call_entries += len(event["tool_calls"])
                         _merge_tool_call_fragments(
                             final_tool_call_fragments,
                             event["tool_calls"],
@@ -284,7 +287,6 @@ async def chat_completions(
                             )
                     elif event["type"] == "done":
                         u = event.get("usage") or {}
-                        final_diagnostics = event.get("diagnostics") or {}
                         final_finish_reason = event.get("finish_reason")
                         final_usage = {
                             "prompt_tokens": u.get("prompt_tokens", 0),
@@ -300,7 +302,7 @@ async def chat_completions(
                 # Flaky mid-stream connection drop — retry once before failing.
                 if error_msg is not None and looks_like_transient_stream_error(error_msg) and not transient_retried:
                     transient_retried = True
-                    logbus.push("info", "chat", f"transient stream drop — retrying in 1s: {error_msg[:120]}", account_id=account_id, model=model_level)
+                    trace.emit("info", f"transient stream drop — retrying in 1s: {error_msg[:120]}", phase="retry")
                     await asyncio.sleep(1)
                     continue
 
@@ -310,23 +312,23 @@ async def chat_completions(
                     queue = parse_model_queue(error_msg)
                     if queue is not None and queue.get("isQueued") is False and not queue_retried:
                         queue_retried = True
-                        logbus.push("info", "chat", "model queue empty (10605, isQueued=false) — retrying in 3s", account_id=account_id, model=model_level)
+                        trace.emit("info", "model queue empty (10605, isQueued=false) — retrying in 3s", phase="retry")
                         await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
                         continue
-                    logbus.push("warn", "chat", f"model queued: {error_msg[:200]}", account_id=account_id, model=model_level)
+                    trace.emit("warn", f"model queued: {error_msg[:200]}", phase="error", outcome="queue")
                     raise HTTPException(status_code=error_status or 503, detail=error_msg)
                 break
 
             if error_msg is not None:
                 error_kind = classify_chat_error(error_msg, error_scope)
                 if error_kind == "infrastructure":
-                    logbus.push("error", "chat", f"local infrastructure error: {error_msg[:200]}", account_id=account_id, model=model_level)
+                    trace.emit("error", f"local infrastructure error: {error_msg[:200]}", phase="error", outcome=log_outcome(error_kind, error_msg))
                     raise HTTPException(status_code=error_status or 503, detail=error_msg)
                 if error_kind == "quota":
-                    logbus.push("warn", "chat", f"quota exceeded, swapping account", account_id=account_id, model=model_level)
+                    trace.emit("warn", "quota exceeded, swapping account", phase="swap", outcome="quota")
                     await pool.mark_quota_exceeded(account_id)
                     continue  # auto-swap to the next account
-                logbus.push("error", "chat", f"upstream error: {error_msg[:200]}", account_id=account_id, model=model_level)
+                trace.emit("error", f"upstream error: {error_msg[:200]}", phase="error", outcome="account")
                 await pool.mark_failure(account_id, error_msg)
                 raise HTTPException(status_code=error_status or 502, detail=error_msg)
 
@@ -336,22 +338,17 @@ async def chat_completions(
                 final_usage.get("credits") or 0.0,
             )
             final_tool_calls = _finalize_tool_calls(final_tool_call_fragments)
-            logbus.push(
-                "info", "chat", f"completion ok",
-                account_id=account_id, model=model_level,
+            trace.emit(
+                "info", "completion ok",
+                phase="done",
+                outcome="ok",
                 prompt_tokens=final_usage.get("prompt_tokens", 0),
                 completion_tokens=final_usage.get("completion_tokens", 0),
                 total_tokens=final_usage.get("total_tokens", 0),
                 thinking_chars=len(final_thinking),
-                reasoning_item=final_reasoning_item is not None,
-                reasoning_signature_chars=len(final_reasoning_signature),
-                tool_call_chunks=tool_call_chunks,
-                tool_call_fragments=tool_call_entries,
                 tool_calls=len(final_tool_calls),
-                function_call=bool(final_function_call),
                 finish_reason=final_finish_reason,
                 credits=final_usage.get("credits", 0),
-                **final_diagnostics,
             )
 
             message: dict = {"role": "assistant", "content": final_text}
@@ -389,6 +386,12 @@ async def chat_completions(
             if leased:
                 await pool.end_request(account_id)
 
+    trace.emit(
+        "error",
+        "No available accounts. All accounts are exhausted or in cooldown.",
+        phase="error",
+        outcome="infra",
+    )
     raise HTTPException(
         status_code=503,
         detail="No available accounts. All accounts are exhausted or in cooldown.",
@@ -396,14 +399,14 @@ async def chat_completions(
 
 
 def _sse_response(
-    account_id: int,
-    model_level: str,
+    trace: RequestTrace,
     model: str,
     gen,
     first_event: dict,
 ) -> StreamingResponse:
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
+    account_id = trace.account_id
 
     async def _chain():
         """Yield the pre-pulled first event, then the rest of the generator."""
@@ -417,23 +420,20 @@ def _sse_response(
         errored = False
         saw_done = False
         saw_tool_calls = False
-        tool_call_chunks = 0
-        tool_call_entries = 0
-        function_call_chunks = 0
+        tool_calls = 0
         thinking_chars = 0
-        reasoning_item_count = 0
-        reasoning_signature_chars = 0
         text_chars = 0
         try:
             async for event in _chain():
                 if event["type"] == "text":
+                    trace.mark_first_token()
                     text_chars += len(event["text"])
                     yield _openai_chunk(chunk_id, model, created, {"content": event["text"]})
                 elif event["type"] == "thinking":
+                    trace.mark_first_token()
                     thinking_chars += len(event["thinking"])
                     yield _openai_chunk(chunk_id, model, created, {"reasoning_content": event["thinking"]})
                 elif event["type"] == "reasoning_item":
-                    reasoning_item_count += 1
                     yield _openai_chunk(
                         chunk_id,
                         model,
@@ -442,7 +442,6 @@ def _sse_response(
                     )
                 elif event["type"] == "reasoning_signature":
                     signature = event["signature"]
-                    reasoning_signature_chars += len(signature)
                     yield _openai_chunk(
                         chunk_id,
                         model,
@@ -454,12 +453,11 @@ def _sse_response(
                     )
                 elif event["type"] == "tool_calls":
                     saw_tool_calls = True
-                    tool_call_chunks += 1
-                    tool_call_entries += len(event["tool_calls"])
+                    tool_calls += len(event["tool_calls"])
                     yield _openai_chunk(chunk_id, model, created, {"tool_calls": event["tool_calls"]})
                 elif event["type"] == "function_call":
                     saw_tool_calls = True
-                    function_call_chunks += 1
+                    tool_calls += 1
                     yield _openai_chunk(
                         chunk_id,
                         model,
@@ -469,28 +467,23 @@ def _sse_response(
                 elif event["type"] == "done":
                     saw_done = True
                     usage = event.get("usage") or {}
-                    diagnostics = event.get("diagnostics") or {}
                     await pool.mark_success(
                         account_id,
                         usage.get("completion_tokens", 0),
                         usage.get("credits") or usage.get("total_credits") or 0.0,
                     )
-                    logbus.push(
-                        "info", "chat", f"stream done",
-                        account_id=account_id, model=model_level,
+                    trace.emit(
+                        "info", "stream done",
+                        phase="done",
+                        outcome="ok",
                         prompt_tokens=usage.get("prompt_tokens", 0),
                         completion_tokens=usage.get("completion_tokens", 0),
                         total_tokens=usage.get("total_tokens", 0),
                         thinking_chars=thinking_chars,
-                        reasoning_items=reasoning_item_count,
-                        reasoning_signature_chars=reasoning_signature_chars,
                         text_chars=text_chars,
-                        tool_call_chunks=tool_call_chunks,
-                        tool_call_entries=tool_call_entries,
-                        function_call_chunks=function_call_chunks,
+                        tool_calls=tool_calls,
                         finish_reason=event.get("finish_reason"),
                         credits=usage.get("credits", 0),
-                        **diagnostics,
                     )
                     yield _openai_chunk(
                         chunk_id,
@@ -503,30 +496,27 @@ def _sse_response(
                     )
                 elif event["type"] == "error":
                     errored = True
-                    error_kind = classify_chat_error(
-                        event["message"],
-                        event.get("error_scope"),
-                    )
+                    msg = event["message"]
+                    error_kind = classify_chat_error(msg, event.get("error_scope"))
                     if error_kind == "quota":
-                        logbus.push("warn", "chat", f"quota exceeded (stream)", account_id=account_id, model=model_level)
+                        trace.emit("warn", "quota exceeded (stream)", phase="error", outcome="quota")
                         await pool.mark_quota_exceeded(account_id)
                     elif error_kind == "model_queue":
-                        logbus.push("warn", "chat", f"model queued (stream): {event['message'][:200]}", account_id=account_id, model=model_level)
+                        trace.emit("warn", f"model queued (stream): {msg[:200]}", phase="error", outcome="queue")
                     elif error_kind == "infrastructure":
-                        logbus.push("error", "chat", f"local infrastructure error (stream): {event['message'][:200]}", account_id=account_id, model=model_level)
+                        trace.emit("error", f"local infrastructure error (stream): {msg[:200]}", phase="error", outcome=log_outcome(error_kind, msg))
                     else:
-                        msg = event["message"]
                         if looks_like_transient_stream_error(msg) or looks_like_rate_limit(msg):
                             # flaky network / upstream backpressure — not the
                             # account's fault, don't burn its failure budget
-                            logbus.push("warn", "chat", f"transient stream error (no account penalty): {msg[:200]}", account_id=account_id, model=model_level)
+                            trace.emit("warn", f"transient stream error (no account penalty): {msg[:200]}", phase="error", outcome=log_outcome("infrastructure", msg))
                         else:
-                            logbus.push("error", "chat", f"stream error: {msg[:200]}", account_id=account_id, model=model_level)
+                            trace.emit("error", f"stream error: {msg[:200]}", phase="error", outcome="account")
                             await pool.mark_failure(account_id, msg)
                     yield _openai_chunk(chunk_id, model, created, {"content": f"[error] {event['message']}"}, "stop")
         except Exception as e:
             errored = True
-            logbus.push("error", "chat", f"stream exception: {str(e)[:200]}", account_id=account_id, model=model_level)
+            trace.emit("error", f"stream exception: {str(e)[:200]}", phase="error", outcome="infra")
             # Exceptions in router/SSE processing are local infrastructure
             # failures. Explicit upstream account errors arrive as events.
             yield _openai_chunk(chunk_id, model, created, {"content": f"[error] {e}"}, "stop")

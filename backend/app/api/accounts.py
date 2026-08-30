@@ -1,6 +1,5 @@
 import logging
 import time
-from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, select
@@ -23,16 +22,24 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 # ── Static routes FIRST (before /{account_id} shadow-catches them) ──
 
-# Log messages that mark a finished completion in either API dialect. The
-# Anthropic endpoints log their own spellings, so the activity aggregation
-# must list them all — otherwise Anthropic traffic silently drops out of
-# the Usage charts.
+# Legacy fallback: completions used to be identified only by message text.
+# New events carry phase=done + outcome=ok. Keep the spellings so a buffer
+# still holding pre-schema lines counts, and so a new dialect cannot silently
+# vanish from Usage if someone forgets the structured fields.
 _COMPLETION_MESSAGES = frozenset({
     "stream done",              # OpenAI streaming
     "completion ok",            # OpenAI non-streaming
     "anthropic stream done",    # Anthropic streaming
     "anthropic completion ok",  # Anthropic non-streaming
 })
+
+
+def _is_completion(e: dict) -> bool:
+    if e.get("source") != "chat":
+        return False
+    if e.get("phase") == "done" and e.get("outcome") == "ok":
+        return True
+    return e.get("message") in _COMPLETION_MESSAGES
 
 
 @router.get("/stats/activity")
@@ -60,20 +67,15 @@ async def dashboard_activity():
     by_model: dict[str, dict] = {}
     totals = {"requests": 0, "tokens": 0, "credits": 0.0}
 
-    for e in logbus.recent(limit=2000):
-        if e.get("source") != "chat" or e.get("message") not in _COMPLETION_MESSAGES:
-            continue
-        ts = float(e.get("ts") or 0)
-        if ts < start:
-            continue
-        # completion tokens only — same metric as the lifetime Tokens counter
+    seen: set[str] = set()
+
+    def _count(e: dict, ts: float) -> None:
+        nonlocal totals
         tokens = int(e.get("completion_tokens") or 0)
         credits = float(e.get("credits") or 0.0)
-
         idx = min(int((ts - start) // bucket_sec), n_buckets)
         series[idx]["requests"] += 1
         series[idx]["tokens"] += tokens
-
         totals["requests"] += 1
         totals["tokens"] += tokens
         totals["credits"] += credits
@@ -83,6 +85,32 @@ async def dashboard_activity():
         slot["requests"] += 1
         slot["tokens"] += tokens
         slot["credits"] += credits
+
+    for e in logbus.recent(limit=5000):
+        if not _is_completion(e):
+            continue
+        ts = float(e.get("ts") or 0)
+        if ts < start:
+            continue
+        rid = str(e.get("request_id") or f"seq:{e.get('seq')}")
+        if rid in seen:
+            continue
+        seen.add(rid)
+        _count(e, ts)
+
+    # Hydrated SQLite summaries after a restart — the ring buffer is empty
+    # but these rows still feed the Usage charts.
+    for r in logbus.requests(limit=2000):
+        if r.get("outcome") != "ok":
+            continue
+        ts = float(r.get("last_ts") or r.get("ts") or 0)
+        if ts < start:
+            continue
+        rid = str(r.get("request_id") or "")
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        _count(r, ts)
 
     display = {key: name for name, key in QODER_MODEL_DISPLAY}
     models = sorted(by_model.values(), key=lambda m: m["requests"], reverse=True)
@@ -106,18 +134,17 @@ async def dashboard_activity():
 async def dashboard_stats(db: AsyncSession = Depends(get_db)):
     stats = await pool.get_stats(db)
     accounts = await pool.list_accounts(db)
-
-    model_counts = Counter(a.model_level or "auto" for a in accounts)
+    exhausted = sum(1 for a in accounts if a.is_quota_exceeded)
 
     return DashboardStats(
         total_accounts=stats["total_accounts"],
         active_accounts=stats["active_accounts"],
         available_now=stats["available_now"],
         accounts_in_cooldown=stats["accounts_in_cooldown"],
+        accounts_exhausted=exhausted,
         total_requests=stats["total_requests"],
         total_tokens=stats["total_tokens"],
         credits_spent=stats["credits_spent"],
-        accounts_by_model=dict(model_counts),
         recent_errors=[
             {
                 "account_id": a.id,

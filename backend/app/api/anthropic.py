@@ -25,7 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services.account_pool import pool
-from app.services import direct_client, logbus
+from app.services import direct_client
+from app.services.request_log import RequestTrace, log_outcome
 from app.services.qoder_client import resolve_model_level
 from app.services.quota_service import (
     looks_like_transient_stream_error,
@@ -335,6 +336,7 @@ async def create_message(
     session_id = _client_session_id(request.headers)
     tried_ids: set[int] = set()
     model_level = _resolve_level(body.model)
+    trace = RequestTrace("anthropic", model_level)
 
     for _ in range(MAX_SWAP_ATTEMPTS):
         account = await pool.get_next_account(db, exclude_ids=tried_ids)
@@ -348,6 +350,9 @@ async def create_message(
         if not await pool.begin_request(account_id):
             continue
         leased = True
+        trace.set_account(account)
+        label = getattr(account, "name", None) or f"#{account.id}"
+        trace.emit("info", f"started · {label}", phase="start")
 
         def start_gen():
             return direct_client.run_infer(
@@ -373,7 +378,7 @@ async def create_message(
                     first = {"type": "error", "message": "empty upstream response"}
 
                 if first.get("type") == "error" and looks_like_transient_stream_error(first.get("message", "")):
-                    logbus.push("info", "chat", f"anthropic: transient stream drop — retrying in 1s: {first.get('message', '')[:120]}", account_id=account_id, model=model_level)
+                    trace.emit("info", f"transient stream drop — retrying in 1s: {first.get('message', '')[:120]}", phase="retry")
                     await asyncio.sleep(1)
                     gen = start_gen()
                     try:
@@ -384,7 +389,7 @@ async def create_message(
                 if first.get("type") == "error" and classify_chat_error(first.get("message", ""), first.get("error_scope")) == "model_queue":
                     queue = parse_model_queue(first.get("message", ""))
                     if queue is not None and queue.get("isQueued") is False:
-                        logbus.push("info", "chat", "anthropic: model queue empty (10605) — retrying in 3s", account_id=account_id, model=model_level)
+                        trace.emit("info", "model queue empty (10605) — retrying in 3s", phase="retry")
                         await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
                         gen = start_gen()
                         try:
@@ -395,15 +400,14 @@ async def create_message(
                 if first.get("type") == "error":
                     msg = first.get("message", "upstream error")
                     if classify_chat_error(msg, first.get("error_scope")) == "quota":
-                        logbus.push("warn", "chat", "anthropic: quota exceeded, swapping account", account_id=account_id, model=model_level)
+                        trace.emit("warn", "quota exceeded, swapping account", phase="swap", outcome="quota")
                         await pool.mark_quota_exceeded(account_id)
                         continue
-                    return await _handle_first_error(first, account_id, model_level)
+                    return await _handle_first_error(first, trace)
 
                 leased = False
                 return _anthropic_sse_response(
-                    account_id,
-                    model_level,
+                    trace,
                     body.model or model_level,
                     gen,
                     first,
@@ -426,8 +430,10 @@ async def create_message(
 
                 async for event in start_gen():
                     if event["type"] == "text":
+                        trace.mark_first_token()
                         final_text += event["text"]
                     elif event["type"] == "thinking":
+                        trace.mark_first_token()
                         final_thinking += event["thinking"]
                     elif event["type"] == "reasoning_signature":
                         final_reasoning_signature += event["signature"]
@@ -455,7 +461,7 @@ async def create_message(
 
                 if error_msg is not None and looks_like_transient_stream_error(error_msg) and not transient_retried:
                     transient_retried = True
-                    logbus.push("info", "chat", f"anthropic: transient drop — retrying in 1s: {error_msg[:120]}", account_id=account_id, model=model_level)
+                    trace.emit("info", f"transient drop — retrying in 1s: {error_msg[:120]}", phase="retry")
                     await asyncio.sleep(1)
                     continue
 
@@ -463,23 +469,23 @@ async def create_message(
                     queue = parse_model_queue(error_msg)
                     if queue is not None and queue.get("isQueued") is False and not queue_retried:
                         queue_retried = True
-                        logbus.push("info", "chat", "anthropic: model queue empty (10605) — retrying in 3s", account_id=account_id, model=model_level)
+                        trace.emit("info", "model queue empty (10605) — retrying in 3s", phase="retry")
                         await asyncio.sleep(MODEL_QUEUE_RETRY_DELAY)
                         continue
-                    logbus.push("warn", "chat", f"anthropic: model queued: {error_msg[:200]}", account_id=account_id, model=model_level)
+                    trace.emit("warn", f"model queued: {error_msg[:200]}", phase="error", outcome="queue")
                     return _anthropic_error(error_status or 503, "api_error", error_msg)
                 break
 
             if error_msg is not None:
                 error_kind = classify_chat_error(error_msg, error_scope)
                 if error_kind == "quota":
-                    logbus.push("warn", "chat", "anthropic: quota exceeded, swapping account", account_id=account_id, model=model_level)
+                    trace.emit("warn", "quota exceeded, swapping account", phase="swap", outcome="quota")
                     await pool.mark_quota_exceeded(account_id)
                     continue
                 if error_kind == "infrastructure":
-                    logbus.push("error", "chat", f"anthropic: infrastructure error: {error_msg[:200]}", account_id=account_id, model=model_level)
+                    trace.emit("error", f"infrastructure error: {error_msg[:200]}", phase="error", outcome=log_outcome(error_kind, error_msg))
                     return _anthropic_error(error_status or 503, "api_error", error_msg)
-                logbus.push("error", "chat", f"anthropic: upstream error: {error_msg[:200]}", account_id=account_id, model=model_level)
+                trace.emit("error", f"upstream error: {error_msg[:200]}", phase="error", outcome="account")
                 await pool.mark_failure(account_id, error_msg)
                 return _anthropic_error(error_status or 502, "api_error", error_msg)
 
@@ -521,9 +527,10 @@ async def create_message(
                 })
 
             has_tools = bool(final_tool_calls or final_function_call)
-            logbus.push(
-                "info", "chat", "anthropic completion ok",
-                account_id=account_id, model=model_level,
+            trace.emit(
+                "info", "anthropic completion ok",
+                phase="done",
+                outcome="ok",
                 prompt_tokens=final_usage.get("prompt_tokens", 0),
                 completion_tokens=final_usage.get("completion_tokens", 0),
                 thinking_chars=len(final_thinking),
@@ -548,6 +555,12 @@ async def create_message(
             if leased:
                 await pool.end_request(account_id)
 
+    trace.emit(
+        "error",
+        "No available accounts. All accounts are exhausted or in cooldown.",
+        phase="error",
+        outcome="infra",
+    )
     return _anthropic_error(
         503,
         "api_error",
@@ -555,28 +568,29 @@ async def create_message(
     )
 
 
-async def _handle_first_error(first: dict, account_id: int, model_level: str):
+async def _handle_first_error(first: dict, trace: RequestTrace):
     msg = first.get("message", "upstream error")
     error_kind = classify_chat_error(msg, first.get("error_scope"))
     if error_kind == "infrastructure":
-        logbus.push("error", "chat", f"anthropic: infrastructure error: {msg[:200]}", account_id=account_id, model=model_level)
+        trace.emit("error", f"infrastructure error: {msg[:200]}", phase="error", outcome=log_outcome(error_kind, msg))
         return _anthropic_error(first.get("status") or 503, "api_error", msg)
     if error_kind == "model_queue":
-        logbus.push("warn", "chat", f"anthropic: model queued: {msg[:200]}", account_id=account_id, model=model_level)
+        trace.emit("warn", f"model queued: {msg[:200]}", phase="error", outcome="queue")
         return _anthropic_error(first.get("status") or 503, "api_error", msg)
-    logbus.push("error", "chat", f"anthropic: upstream error: {msg[:200]}", account_id=account_id, model=model_level)
-    await pool.mark_failure(account_id, msg)
+    trace.emit("error", f"upstream error: {msg[:200]}", phase="error", outcome="account")
+    if trace.account_id is not None:
+        await pool.mark_failure(trace.account_id, msg)
     return _anthropic_error(first.get("status") or 502, "api_error", msg)
 
 
 def _anthropic_sse_response(
-    account_id: int,
-    model_level: str,
+    trace: RequestTrace,
     model: str,
     gen,
     first_event: dict,
 ) -> StreamingResponse:
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
+    account_id = trace.account_id
 
     async def _chain():
         yield first_event
@@ -636,6 +650,7 @@ def _anthropic_sse_response(
             async for event in _chain():
                 etype = event["type"]
                 if etype == "text":
+                    trace.mark_first_token()
                     if open_block_type != "text":
                         closed = close_block()
                         if closed:
@@ -648,6 +663,7 @@ def _anthropic_sse_response(
                         "delta": {"type": "text_delta", "text": event["text"]},
                     })
                 elif etype == "thinking":
+                    trace.mark_first_token()
                     if open_block_type != "thinking":
                         closed = close_block()
                         if closed:
@@ -701,9 +717,10 @@ def _anthropic_sse_response(
                         usage.get("completion_tokens", 0),
                         usage.get("credits") or usage.get("total_credits") or 0.0,
                     )
-                    logbus.push(
-                        "info", "chat", "anthropic stream done",
-                        account_id=account_id, model=model_level,
+                    trace.emit(
+                        "info", "anthropic stream done",
+                        phase="done",
+                        outcome="ok",
                         prompt_tokens=usage.get("prompt_tokens", 0),
                         completion_tokens=usage.get("completion_tokens", 0),
                         total_tokens=usage.get("total_tokens", 0),
@@ -718,14 +735,14 @@ def _anthropic_sse_response(
                     error_kind = classify_chat_error(
                         event["message"], event.get("error_scope"))
                     if error_kind == "quota":
-                        logbus.push("warn", "chat", "anthropic: quota exceeded (stream)", account_id=account_id, model=model_level)
+                        trace.emit("warn", "quota exceeded (stream)", phase="error", outcome="quota")
                         await pool.mark_quota_exceeded(account_id)
-                    elif error_kind in ("model_queue", "infrastructure"):
-                        logbus.push("warn" if error_kind == "model_queue" else "error",
-                                    "chat", f"anthropic: {error_kind} (stream): {event['message'][:200]}",
-                                    account_id=account_id, model=model_level)
+                    elif error_kind == "model_queue":
+                        trace.emit("warn", f"model_queue (stream): {event['message'][:200]}", phase="error", outcome="queue")
+                    elif error_kind == "infrastructure":
+                        trace.emit("error", f"infrastructure (stream): {event['message'][:200]}", phase="error", outcome=log_outcome(error_kind, event["message"]))
                     else:
-                        logbus.push("error", "chat", f"anthropic: stream error: {event['message'][:200]}", account_id=account_id, model=model_level)
+                        trace.emit("error", f"stream error: {event['message'][:200]}", phase="error", outcome="account")
                         await pool.mark_failure(account_id, event["message"])
                     closed = close_block()
                     if closed:
@@ -736,7 +753,7 @@ def _anthropic_sse_response(
                     })
         except Exception as e:  # noqa: BLE001
             errored = True
-            logbus.push("error", "chat", f"anthropic: stream exception: {str(e)[:200]}", account_id=account_id, model=model_level)
+            trace.emit("error", f"stream exception: {str(e)[:200]}", phase="error", outcome="infra")
             closed = close_block()
             if closed:
                 yield closed

@@ -104,8 +104,8 @@ class DashboardStats(BaseModel):
     active_accounts: int
     available_now: int
     accounts_in_cooldown: int
+    accounts_exhausted: int = 0
     total_requests: int
     total_tokens: int
     credits_spent: float = 0.0
-    accounts_by_model: dict[str, int]
     recent_errors: list[dict]

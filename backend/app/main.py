@@ -10,10 +10,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api import accounts, chat, models, logs, settings as settings_api, status as status_api, anthropic, auth as auth_api
+from app.api import accounts, chat, models, logs, settings as settings_api, anthropic
 from app.services.account_pool import pool
-from app.services import settings_service, signer_service, model_probe, qoder_version
-from app.core.auth import AuthMiddleware
+from app.services import settings_service, signer_service, qoder_version, request_store
 
 # Worker endpoints are optional — the public build ships without them.
 try:
@@ -43,28 +42,13 @@ async def _quota_refresher():
             logger.warning(f"Quota refresher error: {e}")
 
 
-async def _model_prober():
-    """Background loop: ping every model per the configured probe interval."""
-    await asyncio.sleep(5)  # let the pool settle after startup
-    while True:
-        interval = settings_service.get_probe_interval_minutes()
-        try:
-            if interval > 0:
-                await model_probe.probe_all()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning(f"Model prober error: {e}")
-        # Re-read the interval each cycle; poll minutely while disabled.
-        await asyncio.sleep((interval if interval > 0 else 1) * 60)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name}")
     await init_db()
     logger.info("Database initialized")
     await settings_service.load()
+    await request_store.load_recent()
     await qoder_version.refresh(force=True)
     logger.info("Qoder CLI version: %s", qoder_version.snapshot())
 
@@ -87,7 +71,6 @@ async def lifespan(app: FastAPI):
 
     initial_task = asyncio.create_task(_initial_quota())
     refresher = asyncio.create_task(_quota_refresher())
-    prober = asyncio.create_task(_model_prober())
     try:
         yield
     finally:
@@ -95,13 +78,11 @@ async def lifespan(app: FastAPI):
         initial_task.cancel()
         signer_task.cancel()
         version_task.cancel()
-        prober.cancel()
         await asyncio.gather(
             refresher,
             initial_task,
             signer_task,
             version_task,
-            prober,
             return_exceptions=True,
         )
         # The signer is a host-level singleton.  It deliberately survives this
@@ -123,7 +104,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(AuthMiddleware)
 
 app.include_router(accounts.router)
 app.include_router(chat.router)
@@ -133,8 +113,6 @@ if worker is not None:
     app.include_router(worker.router)
 app.include_router(logs.router)
 app.include_router(settings_api.router)
-app.include_router(status_api.router)
-app.include_router(auth_api.router)
 
 
 @app.get("/api/health")

@@ -44,10 +44,10 @@ export interface DashboardStats {
   active_accounts: number
   available_now: number
   accounts_in_cooldown: number
+  accounts_exhausted: number
   total_requests: number
   total_tokens: number
   credits_spent: number
-  accounts_by_model: Record<string, number>
   recent_errors: Array<{
     account_id: number
     account_name: string
@@ -101,30 +101,7 @@ export interface AppSettings {
   accounts_show_tokens: boolean
   accounts_show_requests: boolean
   accounts_auto_delete_exhausted: boolean
-  auth_enabled: boolean
   qoder_infer_base: QoderInferBase
-  probe_interval_minutes: number
-  probe_model_keys: string[]
-}
-
-export interface ModelStatus {
-  model: string
-  display: string
-  alive: boolean
-  is_queued: boolean
-  tps: number
-  tokens: number
-  latency_ms: number
-  error: string | null
-  at: number
-}
-
-export interface ModelStatusSnapshot {
-  enabled: boolean
-  interval_minutes: number
-  probing: boolean
-  last_run: number | null
-  models: ModelStatus[]
 }
 
 export interface ActivityPoint {
@@ -148,13 +125,69 @@ export interface ActivityStats {
   window: { requests: number; tokens: number; credits: number }
 }
 
-export interface PanelApiKey {
-  id: number
-  name: string
-  key_prefix: string
-  created_at: string | null
+export type LogLevel = 'info' | 'warn' | 'error'
+export type LogPhase = 'start' | 'retry' | 'swap' | 'done' | 'error'
+export type LogOutcome = 'ok' | 'quota' | 'queue' | 'rate_limit' | 'infra' | 'account'
+export type LogDialect = 'openai' | 'anthropic'
+
+/** Pool lifecycle actions on source === "pool" events. */
+export type PoolAction =
+  | 'added'
+  | 'removed'
+  | 'parked'
+  | 'auto_deleted'
+  | 'cooldown'
+  | 'restored'
+
+export interface LogEvent {
+  seq: number
+  ts: number
+  level: LogLevel
+  source: string
+  message: string
+  request_id?: string
+  dialect?: LogDialect
+  phase?: LogPhase
+  outcome?: LogOutcome
+  /** Pool lifecycle verb when source === "pool". */
+  action?: PoolAction | string
+  reason?: string
+  account_id?: number
+  account_name?: string
+  model?: string
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  credits?: number
+  latency_ms?: number
+  first_token_ms?: number
+  thinking_chars?: number
+  tool_calls?: number
+  finish_reason?: string
 }
 
-export interface CreatedPanelApiKey extends PanelApiKey {
-  key: string
+export interface RequestSummary {
+  request_id: string
+  ts: number
+  last_ts: number
+  level?: LogLevel
+  source?: string
+  message?: string
+  dialect?: LogDialect
+  model?: string
+  account_id?: number
+  account_name?: string
+  phase?: LogPhase
+  outcome?: LogOutcome
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  credits?: number
+  latency_ms?: number
+  first_token_ms?: number
+  thinking_chars?: number
+  tool_calls?: number
+  finish_reason?: string
+  live?: boolean
 }
+

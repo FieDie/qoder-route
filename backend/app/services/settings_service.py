@@ -3,7 +3,6 @@
 Reads are synchronous dict lookups, so hot paths (e.g. the worker log
 reader checking a flag per line) never touch the database.
 """
-import json
 import logging
 from typing import Optional
 
@@ -11,18 +10,12 @@ from sqlalchemy import select
 
 from app.core.database import async_session
 from app.models.app_setting import AppSetting
-from app.services.model_catalog import (
-    DEFAULT_PROBE_MODEL_KEYS,
-    MODEL_KEYS,
-    MODEL_KEYS_IN_ORDER,
-)
 
 logger = logging.getLogger("qoderroute.settings")
 
 SettingValue = bool | str | int | list[str]
 
 _QODER_INFER_BASES = frozenset({"api1", "api2", "api3"})
-PROBE_INTERVALS = (0, 5, 10, 15, 20, 25, 30, 60)  # minutes; 0 disables probing
 
 _DEFAULTS: dict[str, SettingValue] = {
     "worker_logs_enabled": True,
@@ -32,10 +25,7 @@ _DEFAULTS: dict[str, SettingValue] = {
     "accounts_show_tokens": True,
     "accounts_show_requests": True,
     "accounts_auto_delete_exhausted": False,
-    "auth_enabled": False,
     "qoder_infer_base": "api3",
-    "probe_interval_minutes": 15,
-    "probe_model_keys": list(DEFAULT_PROBE_MODEL_KEYS),
 }
 
 _cache: dict[str, SettingValue] = {
@@ -59,34 +49,12 @@ def _normalize_value(key: str, value: object) -> Optional[SettingValue]:
         candidate = value.strip().lower()
         if candidate in _QODER_INFER_BASES:
             return candidate
-    if key == "probe_interval_minutes":
-        try:
-            minutes = int(value)
-        except (TypeError, ValueError):
-            return None
-        return minutes if minutes in PROBE_INTERVALS else None
-    if key == "probe_model_keys":
-        candidate = value
-        if isinstance(candidate, str):
-            try:
-                candidate = json.loads(candidate)
-            except (TypeError, ValueError):
-                return None
-        if not isinstance(candidate, (list, tuple)):
-            return None
-        if not all(isinstance(item, str) for item in candidate):
-            return None
-        selected = {item for item in candidate if item in MODEL_KEYS}
-        # All-unknown (retired gm51model, typos) falls back to defaults.
-        # Mixed lists just drop the retired keys.
-        if candidate and not selected:
-            return None
-        return [key for key in MODEL_KEYS_IN_ORDER if key in selected]
     return None
 
 
 def _serialize_value(value: SettingValue) -> str:
     if isinstance(value, list):
+        import json
         return json.dumps(value, separators=(",", ":"))
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -112,20 +80,6 @@ async def load() -> None:
 
 def get(key: str) -> SettingValue:
     return _cache.get(key, _DEFAULTS.get(key, False))
-
-
-def get_probe_interval_minutes() -> int:
-    value = _cache.get("probe_interval_minutes", _DEFAULTS["probe_interval_minutes"])
-    normalized = _normalize_value("probe_interval_minutes", value)
-    return int(normalized if normalized is not None else _DEFAULTS["probe_interval_minutes"])
-
-
-def get_probe_model_keys() -> list[str]:
-    value = _cache.get("probe_model_keys", _DEFAULTS["probe_model_keys"])
-    normalized = _normalize_value("probe_model_keys", value)
-    if isinstance(normalized, list):
-        return list(normalized)
-    return list(DEFAULT_PROBE_MODEL_KEYS)
 
 
 def get_qoder_infer_base() -> str:

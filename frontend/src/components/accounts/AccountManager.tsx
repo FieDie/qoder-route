@@ -3,7 +3,8 @@ import { useState } from 'react'
 import { usePoolStatus, useAddAccount, useDeleteAccount, useRefreshQuota, fetchAccountPat, useSettings, useAvailableAccounts, useExhaustedAccounts } from '../../hooks/useApi'
 import { StatusBadge, Card, Modal, Skeleton, EmptyState } from '../ui/GlassPanel'
 import { timeAgo, planEndInfo } from '../../lib/utils'
-import { Plus, Trash2, KeyRound, Activity, ArrowUpRight, RefreshCw, Crown, Copy, Check, Wallet, WalletMinimal, CalendarClock } from 'lucide-react'
+import { Plus, Trash2, KeyRound, Activity, ArrowUpRight, RefreshCw, Crown, Copy, Check, Wallet, WalletMinimal, CalendarClock, ScrollText } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { Account } from '../../types'
 
 const stagger = {
@@ -174,6 +175,9 @@ function AccountCard({ acc, onDelete, onRefreshQuota, quotaRefreshing, quotaRefr
                 : 'opacity-0 group-hover:opacity-100'
             }`}
           >
+            <Link to={`/logs?account=${acc.id}`} className="icon-btn" title="View logs">
+              <ScrollText size={14} />
+            </Link>
             <button
               onClick={onRefreshQuota}
               disabled={quotaRefreshing}

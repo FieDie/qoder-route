@@ -37,13 +37,13 @@ async def init_db():
     from app.models.account import Account  # noqa
     from app.models.pool_counter import PoolCounter  # noqa
     from app.models.app_setting import AppSetting  # noqa
-    from app.models.api_key import ApiKey  # noqa
+    from app.models.request_summary import RequestSummary  # noqa
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_account_quota_columns(conn)
-        await _migrate_api_key_plain_column(conn)
         await _ensure_pat_unique_index(conn)
         await _drop_legacy_activity_state(conn)
+        await _drop_retired_panel_auth(conn)
         await _reactivate_all_accounts(conn)
 
 
@@ -130,6 +130,17 @@ async def _drop_legacy_activity_state(conn):
     ))
 
 
+async def _drop_retired_panel_auth(conn):
+    """Panel API-key gate and model probes were removed."""
+    from sqlalchemy import text
+
+    await conn.execute(text("DROP TABLE IF EXISTS api_keys"))
+    await conn.execute(text(
+        "DELETE FROM app_settings "
+        "WHERE key IN ('auth_enabled', 'probe_interval_minutes', 'probe_model_keys')"
+    ))
+
+
 async def _ensure_pat_unique_index(conn):
     """Unique PAT so the same token cannot enter the pool twice.
 
@@ -151,12 +162,3 @@ async def _ensure_pat_unique_index(conn):
             "Could not create unique PAT index — duplicate tokens already exist"
         )
 
-
-async def _migrate_api_key_plain_column(conn):
-    """Keep the generated key so the panel can copy it later."""
-    from sqlalchemy import text
-
-    result = await conn.execute(text("PRAGMA table_info(api_keys)"))
-    existing = {row[1] for row in result.fetchall()}
-    if existing and "key_plain" not in existing:
-        await conn.execute(text("ALTER TABLE api_keys ADD COLUMN key_plain TEXT"))

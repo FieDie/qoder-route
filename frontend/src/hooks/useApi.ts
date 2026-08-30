@@ -1,6 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Account, AccountPoolStatus, ActivityStats, AppSettings, CreatedPanelApiKey, DashboardStats, ModelCatalogEntry, ModelStatusSnapshot, PanelApiKey, WorkerStatus } from '../types'
-import { authHeaders, notifyUnauthorized } from '../lib/apiKey'
+import type { Account, AccountPoolStatus, ActivityStats, AppSettings, DashboardStats, ModelCatalogEntry, WorkerStatus } from '../types'
 
 const BASE = ''
 
@@ -18,13 +17,9 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
     ...rest,
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
       ...(extraHeaders as Record<string, string> | undefined),
     },
   })
-  if (res.status === 401) {
-    notifyUnauthorized()
-  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(errorMessage(err, 'Request failed'))
@@ -72,14 +67,6 @@ export function useActivityStats() {
   })
 }
 
-export function useModelStatus() {
-  return useQuery<ModelStatusSnapshot>({
-    queryKey: ['model-status'],
-    queryFn: () => api('/api/status/models'),
-    refetchInterval: 5000,
-  })
-}
-
 export function useModelCatalog() {
   return useQuery<ModelCatalogEntry[]>({
     queryKey: ['model-catalog'],
@@ -113,7 +100,6 @@ export function useDeleteAccount() {
   return useMutation({
     mutationFn: (id: number) => api(`/api/accounts/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
-      // invalidate all account-related queries so UI updates immediately
       qc.invalidateQueries({ queryKey: ['pool-status'] })
       qc.invalidateQueries({ queryKey: ['dashboard-stats'] })
       qc.invalidateQueries({ queryKey: ['accounts', 'available'] })
@@ -138,11 +124,6 @@ export function useRefreshQuota() {
 export async function fetchAccountPat(id: number): Promise<string> {
   const data = await api<{ pat: string }>(`/api/accounts/${id}/pat`)
   return data.pat
-}
-
-export async function fetchApiKeySecret(id: number): Promise<string> {
-  const data = await api<{ key: string }>(`/api/auth/keys/${id}`)
-  return data.key
 }
 
 export function useWorkerStatus() {
@@ -209,38 +190,6 @@ export function useUpdateSettings() {
     },
     onSettled: (data) => {
       if (data) qc.setQueryData(['settings'], data)
-    },
-  })
-}
-
-export function useApiKeys() {
-  return useQuery<{ keys: PanelApiKey[] }>({
-    queryKey: ['api-keys'],
-    queryFn: () => api('/api/auth/keys'),
-  })
-}
-
-export function useCreateApiKey() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (name: string) =>
-      api<CreatedPanelApiKey>('/api/auth/keys', {
-        method: 'POST',
-        body: JSON.stringify({ name }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['api-keys'] })
-    },
-  })
-}
-
-export function useDeleteApiKey() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: number) => api(`/api/auth/keys/${id}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['api-keys'] })
-      qc.invalidateQueries({ queryKey: ['settings'] })
     },
   })
 }

@@ -1,15 +1,48 @@
 import { useState, Suspense } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { NavLink, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { NavLink, Routes, Route, Navigate, useLocation, type Location } from 'react-router-dom'
 import { Dashboard } from './Dashboard'
 import { AccountManager } from '../accounts/AccountManager'
 import { WORKER_ENABLED, WorkerPage } from '../../lib/features'
 import { Logs } from '../logs/Logs'
 import { Settings } from '../settings/Settings'
-import { Status } from '../status/Status'
 import { Models } from '../models/Models'
-import { Authentication } from '../auth/Authentication'
-import { LayoutDashboard, Users, TerminalSquare, ScrollText, Settings as SettingsIcon, Activity, Cpu, Menu, X, KeyRound } from 'lucide-react'
+import { LayoutDashboard, Users, TerminalSquare, ScrollText, Settings as SettingsIcon, Cpu, Menu, X } from 'lucide-react'
+
+/** Keeps route + max-width frozen for the whole enter/exit so Logs doesn't
+ *  collapse 1280→1080 (or swap to Accounts) mid fade-out. */
+function PageTransition({ sectionKey, location }: { sectionKey: string; location: Location }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18, ease: 'easeOut' }}
+      className={`mx-auto ${sectionKey === '/logs' ? 'max-w-[1280px]' : 'max-w-[1080px]'}`}
+    >
+      <Routes location={location}>
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/accounts" element={<AccountManager />} />
+        <Route path="/accounts/*" element={<Navigate to="/accounts" replace />} />
+        {WorkerPage && (
+          <Route
+            path="/worker"
+            element={
+              <Suspense fallback={null}>
+                <WorkerPage />
+              </Suspense>
+            }
+          />
+        )}
+        <Route path="/models" element={<Models />} />
+        <Route path="/logs" element={<Logs />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </motion.div>
+  )
+}
 
 const NAV: { path: string; label: string; icon: React.ReactNode; hint: string }[] = [
   { path: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={16} />, hint: 'Overview' },
@@ -18,9 +51,7 @@ const NAV: { path: string; label: string; icon: React.ReactNode; hint: string }[
     ? [{ path: '/worker', label: 'Worker', icon: <TerminalSquare size={16} />, hint: 'Trials' }]
     : []),
   { path: '/models', label: 'Models', icon: <Cpu size={16} />, hint: 'Catalog' },
-  { path: '/status', label: 'Status', icon: <Activity size={16} />, hint: 'Models' },
   { path: '/logs', label: 'Logs', icon: <ScrollText size={16} />, hint: 'Activity' },
-  { path: '/auth', label: 'Authentication', icon: <KeyRound size={16} />, hint: 'Keys' },
   { path: '/settings', label: 'Settings', icon: <SettingsIcon size={16} />, hint: 'Config' },
 ]
 
@@ -174,38 +205,9 @@ export function AppLayout() {
 
       {/* Content */}
       <main className="flex-1 min-w-0 pt-14 lg:pt-0">
-        <div className="max-w-[1080px] mx-auto px-5 lg:px-10 py-8 lg:py-10">
+        <div className="px-5 lg:px-10 py-8 lg:py-10">
           <AnimatePresence mode="wait">
-            <motion.div
-              key={sectionKey}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.16, ease: 'easeOut' }}
-            >
-              <Routes location={location}>
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/accounts" element={<AccountManager />} />
-                <Route path="/accounts/*" element={<Navigate to="/accounts" replace />} />
-                {WorkerPage && (
-                  <Route
-                    path="/worker"
-                    element={
-                      <Suspense fallback={null}>
-                        <WorkerPage />
-                      </Suspense>
-                    }
-                  />
-                )}
-                <Route path="/models" element={<Models />} />
-                <Route path="/status" element={<Status />} />
-                <Route path="/logs" element={<Logs />} />
-                <Route path="/auth" element={<Authentication />} />
-                <Route path="/settings" element={<Settings />} />
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
-              </Routes>
-            </motion.div>
+            <PageTransition key={sectionKey} sectionKey={sectionKey} location={location} />
           </AnimatePresence>
         </div>
       </main>

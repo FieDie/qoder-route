@@ -11,41 +11,38 @@ QoderRoute/
 │   │   ├── api/                  # FastAPI routers (HTTP endpoints)
 │   │   │   ├── accounts.py       # CRUD, pool status, quota, PAT reveal, traffic-stat endpoints
 │   │   │   ├── anthropic.py      # /v1/messages + /v1/messages/count_tokens (Anthropic Messages API)
-│   │   │   ├── auth.py            # /api/auth keys + verify (panel API keys)
 │   │   │   ├── chat.py           # /v1/chat/completions implementation
-│   │   │   ├── logs.py            # /api/logs (+ SSE streaming)
+│   │   │   ├── logs.py            # /api/logs (+ SSE streaming, DELETE clears bus + summaries)
 │   │   │   ├── models.py         # /v1/models + /api/models/catalog
 │   │   │   ├── settings.py       # Runtime settings (GET/PUT)
-│   │   │   ├── status.py         # Model health snapshot
 │   │   │   └── worker.py         # [gitignored; not in public build] optional trial-worker API
 │   │   ├── core/
-│   │   │   ├── auth.py           # AuthMiddleware: panel API-key gate
 │   │   │   ├── config.py         # pydantic-settings env vars (.env)
 │   │   │   ├── database.py       # async engine, Base, init_db() with migrations
 │   │   │   └── __init__.py
 │   │   ├── models/               # SQLAlchemy ORM models & schemas
 │   │   │   ├── account.py        # Account table (PAT, machine_id, plan, quota, usage)
-│   │   │   ├── api_key.py        # ApiKey table (panel keys: hash + plaintext for copy)
 │   │   │   ├── app_setting.py    # AppSetting table (key/value DB-backed settings)
 │   │   │   ├── pool_counter.py   # PoolCounter table (lifetime credits_spent counter)
+│   │   │   ├── request_summary.py # RequestSummary table (24h request outcomes)
 │   │   │   └── schemas.py        # Pydantic models: AccountCreate/Out, ChatCompletion*, DashboardStats*
 │   │   ├── services/             # Business logic services
 │   │   │   ├── account_pool.py   # AccountPool class (rotation, refresh, mark_success/failure)
-│   │   │   ├── api_key_service.py    # Generate/hash/verify panel keys (qr_…)
 │   │   │   ├── direct_client.py      # Build native request body, run_infer generator (signer→upstream stream)
-│   │   │   ├── logbus.py               # In-memory ring buffer + SSE subscribers
+│   │   │   ├── logbus.py               # In-memory ring buffer + request index + SSE subscribers
 │   │   │   ├── model_catalog.py         # Canonical model keys, credit factors and capabilities
-│   │   │   ├── model_probe.py          # Periodic TPS probes per model level
 │   │   │   ├── qoder_client.py         # resolve_model_level + validate_pat (HTTP, no CLI)
 │   │   │   ├── quota_service.py        # Job token exchange, plan/quota/userinfo fetch from openapi.qoder.sh
 │   │   │   ├── qoder_version.py        # Cosy/CLI version from npm @qoder-ai/qodercli (auto-refresh)
+│   │   │   ├── request_log.py           # RequestTrace: request_id, phase, outcome on every chat line
+│   │   │   ├── request_store.py         # Persist terminal request summaries (24h) for Usage/Requests
 │   │   │   ├── settings_service.py     # In-memory cache of DB-backed settings with _DEFAULTS registry
 │   │   │   ├── signer_service.py       # Signer singleton management (ensure_signer, supervisor, post_to_signer)
 │   │   │   ├── worker_runner.py        # [gitignored; not in public build] optional worker runner
 │   │   │   └── worker_pool.py          # [gitignored; not in public build] optional worker pool
 │   │   ├── utils/
 │   │   │   └── __init__.py
-│   │   └── main.py                   # FastAPI app factory, lifespan, AuthMiddleware, static mounting, routers
+│   │   └── main.py                   # FastAPI app factory, lifespan, static mounting, routers
 │   ├── data/                         # SQLite DB, logs, pidfiles (gitignored)
 │   ├── signer/
 │   │   ├── qoder_auth_wasm.wasm      # WASM auth module shipped in-repo for the Node signer
@@ -65,25 +62,21 @@ QoderRoute/
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── accounts/AccountManager.tsx     # Accounts tab with available/exhausted views
-│   │   │   ├── auth/Authentication.tsx          # Panel keys + auth_enabled toggle
-│   │   │   ├── auth/AuthGate.tsx                # Unlock overlay on 401
-│   │   │   ├── layout/AppLayout.tsx            # Sidebar nav + Routes
-│   │   │   ├── layout/Dashboard.tsx            # Dashboard tab
-│   │   │   ├── logs/Logs.tsx                   # SSE live logs component
+│   │   │   ├── layout/AppLayout.tsx            # Sidebar nav + Routes (no Status/Auth)
+│   │   │   ├── layout/Dashboard.tsx            # Credits / pool / traffic / errors / quota
+│   │   │   ├── logs/Logs.tsx                   # Requests + Pool tabs, Timeline drawer, SSE
 │   │   │   ├── models/Models.tsx               # Catalog, canonical keys and credit multipliers
 │   │   │   ├── settings/Settings.tsx           # Runtime settings form
-│   │   │   ├── status/Status.tsx               # Model probes TPS/status cards
 │   │   │   ├── ui/GlassPanel.tsx               # Shared UI components (Card, Badge, Skeleton)
 │   │   │   └── worker/                         # [gitignored; not in public build] optional worker page
 │   │   ├── hooks/
 │   │   │   ├── useApi.ts                       # TanStack Query hooks (usePoolStatus, useDashboardStats, etc.)
 │   │   │   └── useCountUp.ts                   # Utility hook
 │   │   ├── lib/
-│   │   │   ├── apiKey.ts                      # localStorage panel key, auth headers, SSE ?api_key=
 │   │   │   ├── features.ts                     # Conditional imports for optional modules (WORKER_ENABLED, WorkerPage lazy loader)
 │   │   │   └── utils.ts                        # Formatting utilities (timeAgo, parseUtc, cn helpers)
-│   │   ├── types/index.ts                      # TS types matching backend responses (Account, AppSettings, PanelApiKey, etc.)
-│   │   ├── App.tsx                             # QueryClientProvider + BrowserRouter + AuthGate + AppLayout
+│   │   ├── types/index.ts                      # TS types matching backend responses (Account, AppSettings, etc.)
+│   │   ├── App.tsx                             # QueryClientProvider + BrowserRouter + AppLayout
 │   │   ├── main.tsx                            # Entry point
 │   │   └── index.css                           # Tailwind styles + globals
 │   ├── public/qoder.svg                        # Static favicon
@@ -93,6 +86,8 @@ QoderRoute/
 │   ├── vite.config.ts                          # Server port 5173, proxy /api & /v1 → localhost:8010
 │   ├── tailwind.config.js
 │   └── postcss.config.js
+├── public/
+│   └── dashboard-preview-v3.png              # README dashboard screenshot
 ├── .gitignore                                    # Excludes builds, data, local tests, optional worker and secrets
 ├── README.md                                     # User-facing documentation
 └── AGENTS.md                                     # This file
@@ -148,13 +143,11 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 ## Conventions
 
-- **Routers:** Each feature's HTTP routes are defined in a dedicated file under `backend/app/api/`. These are included in `app/main.py` via `app.include_router()`. The Anthropic router (`anthropic.py`) translates the Anthropic Messages API (block content, `input_schema` tools, named SSE events) onto the same `direct_client.run_infer` pipeline as `chat.py`, reusing its account swap / queue-retry / error-classification helpers via imports from `app.api.chat`. Panel-key CRUD lives in `auth.py`; the gate itself is `AuthMiddleware` in `core/auth.py` (Starlette middleware, not a router).
+- **Routers:** Each feature's HTTP routes are defined in a dedicated file under `backend/app/api/`. These are included in `app/main.py` via `app.include_router()`. The Anthropic router (`anthropic.py`) translates the Anthropic Messages API (block content, `input_schema` tools, named SSE events) onto the same `direct_client.run_infer` pipeline as `chat.py`, reusing its account swap / queue-retry / error-classification helpers via imports from `app.api.chat`.
 
 - **Business Logic:** Implementation lives in `backend/app/services/`. Key services:
   - `account_pool.py`: Account rotation, quota tracking, and success/failure bookkeeping.
-  - `api_key_service.py`: Panel API keys (`qr_…`); SHA-256 lookup plus stored plaintext for copy.
   - `model_catalog.py`: Single source of truth for public model keys, names, credit factors, context windows and Reasoning/Thinking capabilities.
-  - `model_probe.py`: Probes only the canonical keys selected by the `probe_model_keys` runtime setting.
   - `qoder_client.py`: `resolve_model_level()` (catalog + display-name aliases) and `validate_pat()` (HTTP job-token + userinfo, no CLI).
   - `quota_service.py`: PAT validation, job token exchange, plan/quota userinfo fetching.
   - `direct_client.py`: Builds the native Qoder request shape, delegates to signer `/infer`, parses upstream SSE (including encrypted events).
@@ -162,16 +155,23 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 - **Data Models:** SQLAlchemy models in `backend/app/models/*.py`. Pydantic schemas (request/response models) consolidated in `backend/app/models/schemas.py`.
 
-- **Frontend Organization:** Components are organized by feature folder (`components/accounts`, `components/auth`, `components/settings`, etc.). State is managed by TanStack Query with hooks in `hooks/useApi.ts` (`api()` attaches `Authorization: Bearer` from `lib/apiKey.ts` and fires `qoderroute:unauthorized` on 401). Types live in `types/index.ts`. `App.tsx` wraps the tree in `AuthGate`.
+- **Frontend Organization:** Components are organized by feature folder (`components/accounts`, `components/settings`, etc.). State is managed by TanStack Query with hooks in `hooks/useApi.ts`. Types live in `types/index.ts`.
+  - **Dashboard** ([`Dashboard.tsx`](frontend/src/components/layout/Dashboard.tsx)): credits left, pool `available / total` (+ cooldown/exhausted subline), last-hour window, traffic chart (stock recharts Tooltip), recent errors, quota-by-account with `plan_name` chips. No donut, no `accounts_by_model`, no custom 200-line hover layer.
+  - **Logs** ([`Logs.tsx`](frontend/src/components/logs/Logs.tsx)): toggle **Requests | Pool**. Requests = table + Timeline drawer; Pool = lifecycle table (`action` + detail). `?account=` filters by id **or** matching `account_name` (delete/re-add keeps the name, gets a new id). Pause/Clear/`DELETE /api/logs` shared.
 
 - **Settings Registry:** `settings_service.py` defines `_DEFAULTS` dict at module scope. Every new runtime setting requires three updates:
   1. Add key with default value to `_DEFAULTS`.
   2. Update `SettingsUpdate` schema in `backend/app/api/settings.py` to accept the field.
   3. Add the property to `AppSettings` type in `frontend/src/types/index.ts`.
-  List-valued settings such as `probe_model_keys` are JSON-serialized in the key/value settings table and must return detached list copies from `snapshot()`.
-  `PUT /api/settings` refuses `auth_enabled: true` when no panel keys exist. Turning `accounts_auto_delete_exhausted` on immediately sweeps currently parked accounts.
+  If a setting is list-valued, JSON-serialize it in the key/value table and return a detached list copy from `snapshot()`. Turning `accounts_auto_delete_exhausted` on immediately sweeps currently parked accounts.
 
-- **Panel Authentication:** `auth_enabled` (default off) gates admin `/api/*` only. Model traffic stays public: `/v1/chat/completions`, `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models`. Also always public: `/api/health`, `/api/health/live`, `/api/auth/verify`, SPA/static assets. Key accepted from `Authorization: Bearer`, `X-API-Key`, or `?api_key=` (needed for `EventSource`, which cannot set headers). Deleting the last key while the gate is on auto-disables `auth_enabled`. JWT env vars in `config.py` (`jwt_secret`, `jwt_algorithm`, `access_token_expire_minutes`) are unused leftovers — do not wire them.
+- **JWT env leftovers:** `jwt_secret`, `jwt_algorithm`, and `access_token_expire_minutes` in `config.py` are unused — do not wire them.
+
+- **Retired panel auth / probes:** Panel API keys, AuthGate, Status page, and model-health probes were removed. `init_db` drops the `api_keys` table and deletes `auth_enabled`, `probe_interval_minutes`, and `probe_model_keys` from settings. Do not reintroduce those keys without restoring the full stacks. JWT fields in `config.py` stay unused.
+
+- **DashboardStats shape:** `GET /api/accounts/stats/dashboard` exposes `accounts_exhausted` (parked quota-exceeded rows). There is **no** `accounts_by_model` — `Account.model_level` is always `'auto'` from the add form and is not a routing dimension. Do not revive per-account model KPIs.
+
+- **Pool lifecycle log lines:** `account_pool` emits `logbus.push(..., source="pool", action=...)` for `added`, `removed`, `parked`, `auto_deleted`, `cooldown`, `restored` (plus optional `reason`). The Logs **Pool** tab filters `source === "pool"`. These are ring-buffer only.
 
 - **Signer Lifecycle:** The signer is a Node.js server at `127.0.0.1:8123`. It is started exactly once by `signer_service.ensure_signer()` which uses a filesystem lock (`backend/signer/.start.lock`) to avoid duplicate spawns. A background supervisor (`signer_supervisor()`) monitors health and restarts the signer if it exits unexpectedly. Because the signer is detached (`start_new_session=True`), it survives backend process replacement. `POST /infer` takes `{jt, uid, machine_id, base_url, body_json, model_key, model_source, cosy_version}` and returns `{url, headers, body_b64}`. WASM contexts are cached by `jt + machine_id + cosy_version`.
 
@@ -208,7 +208,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   ```ts
   ['pool-status'], ['dashboard-stats'], ['accounts', 'available'], ['accounts', 'exhausted']
   ```
-  Any agent implementing similar mutations must invalidate these four query keys to keep the UI consistent. Deleting a panel API key invalidates `['api-keys']` and `['settings']` (last-key delete may flip `auth_enabled`).
+  Any agent implementing similar mutations must invalidate these four query keys to keep the UI consistent.
 
 - **PATs Are Unique**  
   `pool.add_account` rejects a duplicate token (`ValueError`: `"This PAT is already in the pool"`) and `init_db` creates `ix_accounts_pat_token`. Do not add a second row for the same PAT.
@@ -229,13 +229,10 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   The public endpoint `/v1/models` returns model objects with `id` set to canonical catalog keys (for example `qmodel_38max`, `cmodel`, `ultimate`). Clients should pass these exact strings. Friendly names such as `"Qwen3.8-Max"` are normalized by `resolve_model_level()`, but canonical IDs are preferred. `qmodel_preview` is a private compatibility key and must not be advertised as Qwen3.8-Max. `/v1/models` also sets Anthropic-friendly `type` + `display_name`; Thinking flags live on `/api/models/catalog`, not on `/v1/models`.
 
 - **Model Catalog Is the Single Source of Truth**
-  Add or change public models in `services/model_catalog.py`; do not independently hardcode another public list in routing, API handlers, probes, or the frontend. `QODER_MODEL_DISPLAY`, `/v1/models`, `/api/models/catalog`, `MODEL_KEY_MAP`, account selectors, and probe choices must stay derived from this catalog. Credit factors are base multipliers; actual upstream billing can vary.
+  Add or change public models in `services/model_catalog.py`; do not independently hardcode another public list in routing, API handlers, or the frontend. `QODER_MODEL_DISPLAY`, `/v1/models`, `/api/models/catalog`, `MODEL_KEY_MAP`, and account selectors must stay derived from this catalog. Credit factors are base multipliers; actual upstream billing can vary.
 
 - **Reasoning and Thinking Are Different Capabilities**
   `is_reasoning` mirrors Qoder's model classification. `supports_thinking` mirrors the presence of `thinking_config`. Kimi-K3 (`kmodel_latest`) is the important counterexample: `is_reasoning=false`, but thinking is enabled with `low/high/max` effort and defaults to `max`. Kimi-K2.7-Code (`kmodel`) has no thinking config in the current catalog. Never infer thinking support from `is_reasoning` alone.
-
-- **Model Probes Spend Real Credits**
-  `probe_model_keys` controls exactly which routes are probed. The safe default is the named catalog models, including Qwen3.8-Flash (`qfmodel`) and GLM-5.3-Flash (`gfmodel`); Cantus (`3.2×`) and generic tiers are opt-in. An empty list is valid and probes nothing. Selection changes apply on the next cycle, and stale status results for deselected models are filtered from the API snapshot. Successful probes call `mark_success` with completion tokens and upstream credits so local quota drains like live traffic.
 
 - **Reasoning Effort Defaults**  
   `_normalize_effort` defaults to the model peak (`max`, or `xhigh` for `qmodel_38max` / `qfmodel`) only when the OpenAI client omits `reasoning_effort`. An explicit client value is honored as-is; bare `max` on the Qwen3.8 routes is rewritten to `xhigh`. For those two keys, explicit `reasoning_effort` / `enable_thinking` are still omitted from the upstream body when the client did not send an effort, because that provider rejects inventing the switches.
@@ -256,10 +253,10 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
   The `context_length` parameter inside the request body sets the reservation; putting the same value in `model_config.context_window` has no effect on the inference path. Use only `parameters.context_length`.
 
 - **Live Logs Replay Strategy**  
-  `/api/logs/stream` first yields ~100 recent events, then pushes live, then ends after ~30s (`STREAM_LIFETIME_SECONDS`) so proxies cannot hold the socket forever. Clients using `EventSource` reconnect; they must process events idempotently because reconnection will replay the tail again. The sequence number (`seq`) can be used to skip duplicates. When panel auth is on, the stream URL must include `?api_key=` (`logsStreamUrl()` in `lib/apiKey.ts`).
+  `/api/logs/stream` first yields ~200 recent events, then pushes live, then ends after ~30s (`STREAM_LIFETIME_SECONDS`) so proxies cannot hold the socket forever. Clients using `EventSource` reconnect; they must process events idempotently because reconnection will replay the tail again. The sequence number (`seq`) can be used to skip duplicates. Chat lines carry `request_id`, `dialect`, `phase` (`start`/`retry`/`swap`/`done`/`error`), `outcome` (`ok`/`quota`/`queue`/`rate_limit`/`infra`/`account`), `account_name`, `latency_ms`, `first_token_ms`. Pool lifecycle lines use `source: "pool"` with structured `action` (`added` / `removed` / `parked` / `auto_deleted` / `cooldown` / `restored`) and optional `reason` — the Logs **Pool** tab filters on these; they are ring-buffer only (no 24h SQLite). Do not splat `**diagnostics` onto the bus. `DELETE /api/logs` clears the ring buffer, the in-memory request index, and the `request_summaries` table.
 
-- **Usage Activity Counts Completion Log Spellings**  
-  `/api/accounts/stats/activity` aggregates only log events whose `message` matches an entry in `_COMPLETION_MESSAGES` in `backend/app/api/accounts.py` — currently `"stream done"`, `"completion ok"`, `"anthropic stream done"`, `"anthropic completion ok"`. A new endpoint dialect that logs a different completion message must register it there, or its traffic silently drops out of the Usage charts (this exact bug hid all Anthropic traffic from the dashboard).
+- **Usage Activity Counts Completions, Not Message Spellings**  
+  `/api/accounts/stats/activity` counts events with `phase=done` and `outcome=ok` (plus a legacy fallback on `_COMPLETION_MESSAGES`: `"stream done"`, `"completion ok"`, `"anthropic stream done"`, `"anthropic completion ok"`). Terminal summaries are also persisted in `request_summaries` for 24h and hydrated into the in-memory request index at startup, so Usage/Requests survive a backend restart. A new dialect must emit `phase=done`/`outcome=ok` via `RequestTrace.emit`.
 
 - **10605 Queue Payloads Must Stay JSON-Parsed**  
   The 403 handler in `direct_client.run_infer` extracts the inner `{"code":"10605",...}` payload via `_extract_queue_payload` (json.loads on the substring from `{`). The API layer's `parse_model_queue` reads `isQueued` from that message to drive the quiet retry. Do not replace this with string `replace()` tricks — stripping `"upstream status "` left a `403:` prefix behind and blanket-unescaping broke quoted values, so the retry never fired and clients got 503s instead.
@@ -284,8 +281,8 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 7. **Bookkeeping:** On `done`:
    - `pool.mark_success(account_id, tokens_used, credits_used)` updates counters and local quota estimates.
-   - Log entry pushed via `logbus.push("info", "chat", ...)`.
-   - Usage stats reflected immediately in dashboard traffic queries.
+   - `RequestTrace.emit(..., phase="done", outcome="ok")` writes a structured log line and persists a 24h request summary.
+   - Usage stats read those completions (`phase=done`/`outcome=ok`), not freeform message text.
 
 8. **Failure Handling:** Errors classified by source (infrastructure, quota, model_queue, account):
    - Infrastructure (signer, 429/rate-limit, 416 session blocked, truncated stream): raise HTTPException; do not penalize the account.
@@ -308,7 +305,7 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 - **Coverage Examples:**
   - `test_signer_resilience.py`: Tests concurrent ensure-signer locking, recovery loops.
   - `test_runtime_settings.py`: Validates SettingsUpdate schema constraints for known keys.
-  - `test_model_catalog.py`: Verifies catalog metadata, canonical routing identities, API output, and runtime probe selection.
+  - `test_model_catalog.py`: Verifies catalog metadata, canonical routing identities, and API output.
   - `test_thinking_regression.py`: Verifies correct model config (context length, reasoning enums) for specific model levels.
 
 When writing new tests, follow existing patterns: define fake sessions/repositories for isolation, mock network calls, and assert both side-effects (session state changes) and return values.

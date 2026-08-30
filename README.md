@@ -1,14 +1,17 @@
 # QoderRoute
 
-QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qoder (qoder.sh). It maintains a pool of Qoder accounts (via PAT tokens), accepts requests formatted for the OpenAI chat API at `/v1/chat/completions` and the Anthropic Messages API at `/v1/messages`, signs outbound requests through a Node.js WASM sidecar, forwards them to Qoder upstream endpoints (`api1/2/3.qoder.sh`), and automatically rotates between accounts when quota is exhausted. The project includes a React + TypeScript admin panel for monitoring accounts, quotas, the Qoder model catalog and credit multipliers, model health, live request logs via SSE, and runtime settings. An optional API-key gate can lock the panel (and other `/api/*` admin routes) without affecting model traffic.
+QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qoder (qoder.sh). It maintains a pool of Qoder accounts (via PAT tokens), accepts requests formatted for the OpenAI chat API at `/v1/chat/completions` and the Anthropic Messages API at `/v1/messages`, signs outbound requests through a Node.js WASM sidecar, forwards them to Qoder upstream endpoints (`api1/2/3.qoder.sh`), and automatically rotates between accounts when quota is exhausted. The project includes a React + TypeScript admin panel for accounts, quotas, the model catalog, live request logs via SSE, and runtime settings.
 
 ## Dashboard Preview
 
-![QoderRoute Dashboard](public/dashboard-preview-v2.png)
+![QoderRoute Dashboard](public/dashboard-preview-v3.png)
 
-*Real-time pool telemetry: account health, traffic, per-model usage, credits, and live error monitoring.*
+*Credits left, pool availability, last-hour traffic (from persisted request summaries), recent errors, and per-account quota.*
 
 ## Features
+
+- **Dashboard**  
+  Slim ops overview: pool credits remaining, available/cooldown/exhausted counts, last-hour request/credit totals, a 60‑minute traffic chart, sticky account errors, and per-account quota bars (with plan chips). Traffic for the hour is built from request summaries so it survives a backend restart (until Clear / retention wipe).
 
 - **Account Pool with Fill‑First Rotation**  
   Accounts are ordered by priority (descending) then ID (ascending). The first available account with remaining quota serves until it exhausts, then the next in line takes over. Near exhaustion, concurrent starts spill onto the next account so a request burst does not all fail on the same dying PAT. The same PAT cannot be added twice.
@@ -23,19 +26,13 @@ QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qod
   Transient 429 / rate-limit responses never park, delete, or cooldown an account — only genuine quota-exhaustion signals do (quota / credits-exhausted markers). Rate limits are treated as infrastructure backpressure and left for the client to retry.
 
 - **Model Catalog & Credit Multipliers**
-  The Models page lists all currently mirrored Qoder routes with their canonical key, display name, base credit factor, context capability, vision support, and separate Reasoning/Thinking flags. The same catalog drives request routing, `/v1/models`, `/api/models/catalog`, account model selectors, and health probes.
-
-- **Configurable Model Health Probes with TPS**
-  Periodic probes measure liveness and tokens-per-second (TPS) only for the models selected in **Settings → Models Probe**. Both the interval and model list are persisted. Every successful probe is a real upstream request and drains local quota like live traffic. Expensive models such as Cantus and generic tier routes are available but intentionally opt-in.
+  The Models page lists all currently mirrored Qoder routes with their canonical key, display name, base credit factor, context capability, vision support, and separate Reasoning/Thinking flags. The same catalog drives request routing, `/v1/models`, `/api/models/catalog`, and account model selectors.
 
 - **Live Logs via SSE**  
-  An SSE stream replays recent events then pushes new ones in real time (`GET /api/logs/stream`). Sources include chat completions, account events, provisioning, and routing updates.
+  The Logs page has two views: **Requests** (result, account, tokens, credits, latency + per-request Timeline drawer) and **Pool** (account lifecycle: added / removed / parked / auto-deleted / cooldown / restored). Account cards deep-link with `?account=` (matches current id or the same account name after a delete/re-add). `GET /api/logs/stream` pushes updates; `DELETE /api/logs` clears the ring buffer, in-memory request index, and 24h `request_summaries`. Request summaries persist 24h; pool lifecycle events are ring-buffer only.
 
 - **Runtime Settings**  
-  All configuration values are persisted in the database and editable via `/api/settings`. Options control log visibility, token/email/request display, auto-delete behavior for exhausted accounts, Qoder backend endpoint selection, probe frequency, the exact models included in each probe cycle, and the panel authentication toggle.
-
-- **Panel Authentication**  
-  Off by default. The **Authentication** page creates `qr_…` keys and can enable a gate on admin `/api/*` routes (Bearer / `X-API-Key`). `/v1/chat/completions`, `/v1/messages`, `/v1/models` stay public. You cannot turn the gate on until at least one key exists; deleting the last key turns it off.
+  All configuration values are persisted in the database and editable via `/api/settings`. Options control worker log visibility (when the optional worker is present), token/email/request display on account cards, auto-delete behavior for exhausted accounts, and Qoder backend endpoint selection (`api1` / `api2` / `api3`).
 
 - **Auto Cosy/CLI Version**  
   The router reads the published `@qoder-ai/qodercli` version from npm and applies it to Cosy headers, the business envelope, and the signer context — no hand edits on every CLI release.
@@ -91,12 +88,11 @@ Credit values are base multipliers mirrored from Qoder's catalog, not fixed per-
                                                                   +----------------+
 
 Data Layer:
-  - SQLite: data/qoderroute.db (accounts, settings, counters, panel API keys)
+  - SQLite: data/qoderroute.db (accounts, settings, counters, request summaries)
   - Frontend: built from frontend/dist (SPA fallback served by FastAPI)
 
 Background Loops:
   - Quota refresher: every 300 seconds (non-exhausted accounts only)
-  - Model prober: configurable interval via settings
   - Signer supervisor: monitors signer process; restarts if unhealthy
   - Cosy/CLI version: npm latest on startup and every 6 hours
 ```
@@ -185,7 +181,7 @@ Environment variables are loaded from `backend/.env` (pydantic-settings field ma
 | `HOST`                     | `0.0.0.0`                            | Host to bind to                                         |
 | `PORT`                     | `8010`                               | HTTP port                                               |
 | `DATABASE_URL`             | `sqlite+aiosqlite:///./data/qoderroute.db` | Database URL                                          |
-| `JWT_SECRET`               | `qoderroute-super-secret-key...`     | Unused leftover (panel auth uses API keys, not JWT)    |
+| `JWT_SECRET`               | `qoderroute-super-secret-key...`     | Unused leftover                                         |
 | `JWT_ALGORITHM`            | `HS256`                              | Unused leftover                                         |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440`                             | Unused leftover                                         |
 | `QODERCLI_PATH`            | ``                                   | Legacy; not required — PAT validation runs over HTTP    |
@@ -202,10 +198,7 @@ Settings managed via `/api/settings` (stored in DB):
 - `worker_logs_enabled`, `worker_retry_allow`, `worker_proxy_use`
 - `accounts_show_email`, `accounts_show_tokens`, `accounts_show_requests`
 - `accounts_auto_delete_exhausted`
-- `auth_enabled` (panel API-key gate; default off)
 - `qoder_infer_base` (`api1` | `api2` | `api3`)
-- `probe_interval_minutes` (0 = disabled; otherwise 5–60 min steps)
-- `probe_model_keys` (ordered list of canonical model keys; an empty list probes nothing)
 
 ## API Overview
 
@@ -219,27 +212,22 @@ Settings managed via `/api/settings` (stored in DB):
 - `POST /v1/messages` — Anthropic Messages API (streaming SSE or JSON). Handles block-based content, `input_schema` tools, `thinking` budgets, and reports usage as `input_tokens` / `output_tokens`.
 - `POST /v1/messages/count_tokens` — Rough token estimate for the upcoming request.
 
-**Admin REST API** (gated when `auth_enabled` is on)
+**Admin REST API**
 
 - `GET POST /api/accounts` — List accounts or create a new account (PAT validation required). Includes filter views: `GET /api/accounts/available`, `GET /api/accounts/exhausted`.
 - `DELETE /api/accounts/{id}` — Delete account.
 - `POST /api/accounts/{id}/quota/refresh` — Refresh quota for one account (the way a parked account rejoins).
 - `GET /api/accounts/{id}/pat` — Reveal the full PAT for clipboard copy.
-- `GET /api/accounts/stats/dashboard` — Dashboard statistics.
-- `GET /api/accounts/stats/activity` — Recent traffic aggregated by minute and model.
+- `GET /api/accounts/stats/dashboard` — Dashboard stats (pool counts including `accounts_exhausted`, lifetime totals, `recent_errors`).
+- `GET /api/accounts/stats/activity` — Last-hour traffic series + by-model totals (ring buffer + hydrated request summaries).
 - `GET /api/models/catalog` — Full router catalog with keys, credit factors, context windows, Reasoning/Thinking, and vision capabilities.
-- `GET /api/status/models` — Model health snapshot (TPS, latency, alive/error).
-- `GET /api/logs` — Recent log events.
-- `GET /api/logs/stream` — SSE stream of live logs (pass `?api_key=` when the panel gate is on; `EventSource` cannot send headers).
+- `GET /api/logs` — Recent log events + request summaries.
+- `GET /api/logs/stream` — SSE stream of live logs (replay ~200, then live; reconnect after ~30s).
+- `DELETE /api/logs` — Clear ring buffer, request index, and persisted request summaries.
 - `GET /api/settings` — Current settings.
 - `PUT /api/settings` — Update settings.
-- `GET /api/auth/keys` — List panel API keys (prefix + metadata, not the secret).
-- `POST /api/auth/keys` — Create a panel API key (`{ "name": "…" }`; response includes the secret once).
-- `GET /api/auth/keys/{id}` — Reveal the stored plaintext key for copy.
-- `DELETE /api/auth/keys/{id}` — Delete a key (deleting the last key disables `auth_enabled`).
-- `POST /api/auth/verify` — `{ "key": "qr_…" }` → `{ "valid": true|false }` (always public, used by the unlock overlay).
 - `GET /api/health` — Health check (200 ok, 503 degraded if signer unavailable). Includes `qoder_cli_version` and `qoder_cli_version_source`.
-- `GET /api/health/live` — Liveness probe (always OK).
+- `GET /api/health/live` — Liveness check (always OK).
 
 ## Development
 

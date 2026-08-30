@@ -187,6 +187,10 @@ class AccountPool:
                 await self._park_exhausted(session, acc, "quota refresh shows exhausted")
                 return data
 
+            was_parked = bool(acc.is_quota_exceeded)
+            was_cooling = acc.cooldown_until is not None
+            was_unavailable = not bool(acc.is_available)
+
             mapping = {
                 "plan_tier": "plan_tier",
                 "plan_name": "plan_name",
@@ -215,6 +219,22 @@ class AccountPool:
             acc.consecutive_failures = 0
 
             await session.commit()
+            if was_parked or was_cooling or was_unavailable:
+                reason = (
+                    "quota restored"
+                    if was_parked
+                    else "cooldown cleared"
+                    if was_cooling
+                    else "rejoined routing"
+                )
+                logbus.push(
+                    "info", "pool",
+                    f"account restored: {acc.name} (id {acc.id})",
+                    action="restored",
+                    account_id=acc.id,
+                    account_name=acc.name,
+                    reason=reason,
+                )
             return data
 
     def _auto_delete_allowed_for(self, acc: Account) -> bool:
@@ -232,7 +252,10 @@ class AccountPool:
                 logbus.push(
                     "warn", "pool",
                     f"account auto-deleted (exhausted): {acc.name} (id {acc.id})",
-                    account_id=acc.id, account_name=acc.name,
+                    action="auto_deleted",
+                    account_id=acc.id,
+                    account_name=acc.name,
+                    reason="bulk sweep (auto-delete exhausted)",
                 )
                 await session.delete(acc)
             await session.commit()
@@ -252,7 +275,14 @@ class AccountPool:
                 "Account %s (%d) exhausted (%s); auto-deleting",
                 acc.name, acc.id, reason,
             )
-            logbus.push("warn", "pool", f"account auto-deleted (exhausted): {acc.name} (id {acc.id})", account_id=acc.id, account_name=acc.name, reason=reason)
+            logbus.push(
+                "warn", "pool",
+                f"account auto-deleted (exhausted): {acc.name} (id {acc.id})",
+                action="auto_deleted",
+                account_id=acc.id,
+                account_name=acc.name,
+                reason=reason,
+            )
             await session.delete(acc)
             await session.commit()
             return
@@ -260,7 +290,14 @@ class AccountPool:
             "Account %s (%d) exhausted (%s); parking",
             acc.name, acc.id, reason,
         )
-        logbus.push("warn", "pool", f"account parked (exhausted): {acc.name} (id {acc.id})", account_id=acc.id, account_name=acc.name, reason=reason)
+        logbus.push(
+            "warn", "pool",
+            f"account parked (exhausted): {acc.name} (id {acc.id})",
+            action="parked",
+            account_id=acc.id,
+            account_name=acc.name,
+            reason=reason,
+        )
         acc.is_quota_exceeded = True
         acc.is_available = False
         acc.quota_remaining = 0.0
@@ -443,6 +480,16 @@ class AccountPool:
                     .execution_options(synchronize_session=False)
                 )
                 await session.commit()
+                if cooldown_until is not None and not is_exceeded:
+                    secs = int((cooldown_until - _utcnow()).total_seconds())
+                    logbus.push(
+                        "warn", "pool",
+                        f"account cooldown: {name} (id {account_id}) · {new_failures} failures",
+                        action="cooldown",
+                        account_id=account_id,
+                        account_name=name,
+                        reason=f"{new_failures} consecutive failures · ~{max(secs, 0)}s",
+                    )
         except StaleDataError:
             logger.warning(
                 "mark_failure: account %s deleted concurrently; skipping",
@@ -485,16 +532,31 @@ class AccountPool:
             raise ValueError("This PAT is already in the pool")
         await session.refresh(account)
         await self._refresh()
-        logbus.push("info", "pool", f"account added: {name} (id {account.id})", account_id=account.id, account_name=name)
+        logbus.push(
+            "info", "pool",
+            f"account added: {name} (id {account.id})",
+            action="added",
+            account_id=account.id,
+            account_name=name,
+        )
         return account
 
     async def remove_account(self, session: AsyncSession, account_id: int) -> bool:
         acc = await session.get(Account, account_id)
         if not acc:
             return False
+        name = acc.name
         await session.delete(acc)
         await session.commit()
         await self._refresh()
+        logbus.push(
+            "warn", "pool",
+            f"account removed: {name} (id {account_id})",
+            action="removed",
+            account_id=account_id,
+            account_name=name,
+            reason="manual delete",
+        )
         return True
 
     async def get_stats(self, session: AsyncSession) -> dict:
