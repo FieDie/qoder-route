@@ -172,6 +172,26 @@
   100% { transform: scale(2.2); opacity: 0; }
 }
 
+/* Route fade — CSS, not Framer wait. Ends at opacity 1 so a frozen rAF
+   cannot leave the page invisible; visibilitychange snaps it in. */
+.page-fade {
+  transition: opacity 0.18s ease-out, transform 0.18s ease-out;
+}
+.page-fade-out {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+.page-fade-in {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-fade {
+    transition: none;
+  }
+}
+
 .pulse-dot {
   position: relative;
 }

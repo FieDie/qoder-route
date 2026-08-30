@@ -1,4 +1,4 @@
-import { useState, Suspense } from 'react'
+import { useEffect, useRef, useState, Suspense } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { NavLink, Routes, Route, Navigate, useLocation, type Location } from 'react-router-dom'
 import { Dashboard } from './Dashboard'
@@ -7,20 +7,75 @@ import { WORKER_ENABLED, WorkerPage } from '../../lib/features'
 import { Logs } from '../logs/Logs'
 import { Settings } from '../settings/Settings'
 import { Models } from '../models/Models'
+import { usePageResume } from '../../hooks/usePageResume'
 import { LayoutDashboard, Users, TerminalSquare, ScrollText, Settings as SettingsIcon, Cpu, Menu, X } from 'lucide-react'
 
-/** Keeps route + max-width frozen for the whole enter/exit so Logs doesn't
- *  collapse 1280→1080 (or swap to Accounts) mid fade-out. */
-function PageTransition({ sectionKey, location }: { sectionKey: string; location: Location }) {
+function sectionOf(loc: Location) {
+  return '/' + (loc.pathname.split('/')[1] ?? '')
+}
+
+/** Fade-out then fade-in on a wall-clock timer — not Framer's onAnimationComplete.
+ *  Chrome can freeze rAF after ~5 min in background; a timeout still commits. */
+const PAGE_FADE_MS = 180
+
+function PageRoutes() {
+  const location = useLocation()
+  const locRef = useRef(location)
+  locRef.current = location
+
+  const [displayLoc, setDisplayLoc] = useState(location)
+  const [visible, setVisible] = useState(true)
+  const genRef = useRef(0)
+
+  const sectionKey = sectionOf(location)
+  const displayKey = sectionOf(displayLoc)
+
+  useEffect(() => {
+    if (sectionKey === displayKey) {
+      setDisplayLoc(locRef.current)
+      return
+    }
+
+    const id = ++genRef.current
+    setVisible(false)
+
+    const showNew = (snap: boolean) => {
+      if (id !== genRef.current) return
+      setDisplayLoc(locRef.current)
+      if (snap) {
+        setVisible(true)
+        return
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (id !== genRef.current) return
+          setVisible(true)
+        })
+      })
+      window.setTimeout(() => {
+        if (id !== genRef.current) return
+        setVisible(true)
+      }, 48)
+    }
+
+    const t = window.setTimeout(() => showNew(false), PAGE_FADE_MS)
+    const hard = window.setTimeout(() => showNew(true), PAGE_FADE_MS + 300)
+    const onVis = () => {
+      if (!document.hidden) showNew(true)
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      window.clearTimeout(t)
+      window.clearTimeout(hard)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+  }, [sectionKey, displayKey])
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
-      className={`mx-auto ${sectionKey === '/logs' ? 'max-w-[1280px]' : 'max-w-[1080px]'}`}
+    <div
+      className={`page-fade mx-auto ${displayKey === '/logs' ? 'max-w-[1280px]' : 'max-w-[1080px]'} ${visible ? 'page-fade-in' : 'page-fade-out'}`}
     >
-      <Routes location={location}>
+      <Routes location={displayLoc}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/accounts" element={<AccountManager />} />
@@ -40,7 +95,7 @@ function PageTransition({ sectionKey, location }: { sectionKey: string; location
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
-    </motion.div>
+    </div>
   )
 }
 
@@ -131,8 +186,7 @@ function StatusFooter() {
 
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const location = useLocation()
-  const sectionKey = '/' + (location.pathname.split('/')[1] ?? '')
+  usePageResume()
 
   return (
     <div className="min-h-screen flex" style={{ background: '#000' }}>
@@ -206,9 +260,7 @@ export function AppLayout() {
       {/* Content */}
       <main className="flex-1 min-w-0 pt-14 lg:pt-0">
         <div className="px-5 lg:px-10 py-8 lg:py-10">
-          <AnimatePresence mode="wait">
-            <PageTransition key={sectionKey} sectionKey={sectionKey} location={location} />
-          </AnimatePresence>
+          <PageRoutes />
         </div>
       </main>
     </div>

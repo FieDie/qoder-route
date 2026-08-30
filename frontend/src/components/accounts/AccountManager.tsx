@@ -394,7 +394,7 @@ export function AccountManager() {
       })()}
 
       {/* Account cards */}
-      {loadingAvailable && activeTab === 'available' || loadingExhausted && activeTab === 'exhausted' ? (
+      {(activeTab === 'available' ? loadingAvailable : loadingExhausted) ? (
         <div className="grid md:grid-cols-2 gap-4">
           {[1, 2].map((i) => <Skeleton key={i} className="h-[150px]" />)}
         </div>

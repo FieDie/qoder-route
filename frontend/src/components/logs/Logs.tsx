@@ -249,18 +249,36 @@ export function Logs() {
       evtSourceRef.current = null
       return
     }
-    const es = new EventSource(`${BASE}/api/logs/stream`)
-    evtSourceRef.current = es
-    es.onmessage = (e) => {
-      try {
-        const evt = JSON.parse(e.data) as LogEvent
-        if (evt.seq <= lastSeqRef.current) return
-        lastSeqRef.current = evt.seq
-        setEvents((prev) => [...prev.slice(-1500), evt])
-      } catch { /* keepalive */ }
+
+    const attach = (es: EventSource) => {
+      es.onmessage = (e) => {
+        try {
+          const evt = JSON.parse(e.data) as LogEvent
+          if (evt.seq <= lastSeqRef.current) return
+          lastSeqRef.current = evt.seq
+          setEvents((prev) => [...prev.slice(-1500), evt])
+        } catch { /* keepalive */ }
+      }
     }
+
+    const connect = () => {
+      evtSourceRef.current?.close()
+      const es = new EventSource(`${BASE}/api/logs/stream`)
+      evtSourceRef.current = es
+      attach(es)
+    }
+
+    connect()
+
+    const onVis = () => {
+      if (document.hidden) return
+      const es = evtSourceRef.current
+      if (!es || es.readyState === EventSource.CLOSED) connect()
+    }
+    document.addEventListener('visibilitychange', onVis)
     return () => {
-      es.close()
+      document.removeEventListener('visibilitychange', onVis)
+      evtSourceRef.current?.close()
       evtSourceRef.current = null
     }
   }, [paused])

@@ -7,7 +7,10 @@ const queryClient = new QueryClient({
     queries: {
       retry: 2,
       staleTime: 3000,
+      gcTime: 30 * 60 * 1000,
       refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      networkMode: 'always',
     },
   },
 })
