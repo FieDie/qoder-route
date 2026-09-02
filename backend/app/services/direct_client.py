@@ -202,6 +202,13 @@ def _client_sent_effort(effort: Optional[str]) -> bool:
     return isinstance(effort, str) and bool(effort.strip())
 
 
+def _describe_exception(exc: BaseException) -> str:
+    """``str(httpx.ReadTimeout())`` is empty — always keep the type name."""
+    text = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {text}" if text else name
+
+
 def _extract_queue_payload(text: str) -> Optional[str]:
     """Return the raw inner ``{"code":"10605",...}`` payload from a 403 body.
 
@@ -734,6 +741,8 @@ async def run_infer(
                 }
                 if looks_like_quota_error(error_event["message"]):
                     error_event["error_scope"] = "quota"
+                elif int(wrapper_status) >= 500:
+                    error_event["error_scope"] = "infrastructure"
                 events.append(error_event)
                 continue
 
@@ -806,7 +815,18 @@ async def run_infer(
                 return
             elif resp.status_code != 200:
                 text = (await resp.aread()).decode("utf-8", "replace")[:500]
-                yield {"type": "error", "status": resp.status_code, "message": f"upstream HTTP {resp.status_code}: {text}"}
+                event = {
+                    "type": "error",
+                    "status": resp.status_code,
+                    "message": f"upstream HTTP {resp.status_code}: {text}",
+                }
+                if looks_like_quota_error(event["message"]):
+                    event["error_scope"] = "quota"
+                elif resp.status_code >= 500:
+                    # Gateway/provider failure — the PAT is fine, do not
+                    # let the API layer count it toward the account's cooldown.
+                    event["error_scope"] = "infrastructure"
+                yield event
                 return
 
             # aiter_lines handles both LF and CRLF SSE framing.  Processing the
@@ -849,8 +869,9 @@ async def run_infer(
                 stream_failed = True
                 yield {
                     "type": "error",
-                    "message": f"stream interrupted: {str(e)[:500]}",
+                    "message": f"stream interrupted: {_describe_exception(e)[:500]}",
                     "status": 502,
+                    "error_scope": "infrastructure",
                 }
                 return
 
@@ -867,7 +888,14 @@ async def run_infer(
                 }
                 return
     except Exception as e:
-        yield {"type": "error", "message": str(e)[:512]}
+        # Never reached the upstream (connect/TLS/timeout) or a local decoding
+        # failure — transport-level, not an account problem.
+        yield {
+            "type": "error",
+            "message": f"upstream request failed: {_describe_exception(e)}"[:512],
+            "status": 502,
+            "error_scope": "infrastructure",
+        }
         return
 
     yield {

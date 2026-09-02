@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
 import os
 import subprocess
@@ -11,6 +10,16 @@ from pathlib import Path
 from typing import IO, Any
 
 import httpx
+
+# fcntl does not exist on Windows; msvcrt.locking is the equivalent byte-range lock.
+if os.name == "nt":
+    import msvcrt
+
+    fcntl = None
+else:
+    import fcntl
+
+    msvcrt = None
 
 
 logger = logging.getLogger("qoderroute.signer")
@@ -44,6 +53,30 @@ async def signer_is_healthy(timeout: float = 1.0) -> bool:
         return False
 
 
+def _try_lock(handle: IO[str]) -> bool:
+    """Non-blocking exclusive lock on the lock file; False when another process holds it."""
+    if msvcrt is not None:
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+
+def _unlock(handle: IO[str]) -> None:
+    if msvcrt is not None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 async def _acquire_process_lock(timeout: float) -> IO[str] | None:
     """Acquire the cross-Uvicorn signer start lock without blocking the loop."""
     SIGNER_DIR.mkdir(parents=True, exist_ok=True)
@@ -51,14 +84,12 @@ async def _acquire_process_lock(timeout: float) -> IO[str] | None:
     deadline = time.monotonic() + timeout
     try:
         while True:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if _try_lock(handle):
                 return handle
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    handle.close()
-                    return None
-                await asyncio.sleep(0.1)
+            if time.monotonic() >= deadline:
+                handle.close()
+                return None
+            await asyncio.sleep(0.1)
     except BaseException:
         if not handle.closed:
             handle.close()
@@ -67,7 +98,9 @@ async def _acquire_process_lock(timeout: float) -> IO[str] | None:
 
 def _release_process_lock(handle: IO[str]) -> None:
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        _unlock(handle)
+    except OSError:
+        pass
     finally:
         handle.close()
 
@@ -77,6 +110,13 @@ def _spawn_signer() -> subprocess.Popen[bytes]:
     global _spawned_process
 
     SIGNER_LOG.parent.mkdir(parents=True, exist_ok=True)
+    # Detach from the backend so a Uvicorn restart never takes the signer down
+    # with it: setsid() on POSIX, a detached process group on Windows.
+    detach_kwargs: dict[str, Any] = (
+        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
     with SIGNER_LOG.open("ab", buffering=0) as log_file:
         process = subprocess.Popen(
             ["node", str(SIGNER_SCRIPT)],
@@ -84,8 +124,8 @@ def _spawn_signer() -> subprocess.Popen[bytes]:
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
             close_fds=True,
+            **detach_kwargs,
         )
     SIGNER_PID.write_text(f"{process.pid}\n", encoding="utf-8")
     _spawned_process = process
@@ -212,13 +252,3 @@ async def post_to_signer(
             return await client.post(url, json=json)
         except (httpx.TransportError, OSError) as retry_error:
             raise SignerUnavailableError(str(retry_error)) from retry_error
-
-
-def signer_process_snapshot() -> dict[str, Any]:
-    """Best-effort diagnostics for the readiness endpoint."""
-    pid: int | None = None
-    try:
-        pid = int(SIGNER_PID.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        pass
-    return {"pid": pid, "log": os.fspath(SIGNER_LOG)}

@@ -240,7 +240,10 @@ export function Logs() {
     if (!initial) return
     setEvents(initial.logs || [])
     setSeed(initial.requests || [])
-    lastSeqRef.current = initial.logs?.[initial.logs.length - 1]?.seq ?? 0
+    // Never move the cursor backwards: after Clear the snapshot is empty and a
+    // reset to 0 would let pre-clear lines still in the SSE pipe reappear.
+    const snapshotSeq = initial.logs?.[initial.logs.length - 1]?.seq ?? 0
+    lastSeqRef.current = Math.max(lastSeqRef.current, snapshotSeq)
   }, [initial])
 
   useEffect(() => {

@@ -37,9 +37,25 @@ if ss -tln 2>/dev/null | grep -q ":$PORT "; then
     exit 1
 fi
 
+# Prefer the project venv (README setup), then python3; bare `python` does not
+# exist on stock Debian/Ubuntu. PYTHON=/path/to/python overrides.
+if [[ -z "${PYTHON:-}" ]]; then
+    if [[ -x "$BACKEND_DIR/.venv/bin/python" ]]; then
+        PYTHON="$BACKEND_DIR/.venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON="$(command -v python3)"
+    else
+        PYTHON="$(command -v python || true)"
+    fi
+fi
+if [[ -z "$PYTHON" ]]; then
+    echo "[!] no python interpreter found (set PYTHON=/path/to/python)"
+    exit 1
+fi
+
 echo "[*] starting server (prod, no reload)..."
 cd "$BACKEND_DIR"
-nohup setsid python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT" \
+nohup setsid "$PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT" \
     9>&- \
     >> "$LOG" 2>&1 &
 echo $! > "$PIDFILE"

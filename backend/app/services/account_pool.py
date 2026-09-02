@@ -46,23 +46,11 @@ def _row_is_routable(acc: Account, now: Optional[datetime] = None) -> bool:
 
 
 class AccountPool:
-    _instance: Optional["AccountPool"] = None
-    _lock = asyncio.Lock()
-
     def __init__(self):
         self._last_refresh: datetime = datetime.min
         self._refresh_lock = asyncio.Lock()
         self._in_flight_lock = asyncio.Lock()
         self._in_flight: dict[int, int] = {}
-
-    @classmethod
-    async def get_instance(cls) -> "AccountPool":
-        if cls._instance is None:
-            async with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-                    await cls._instance._refresh()
-        return cls._instance
 
     async def begin_request(self, account_id: int) -> bool:
         """Claim an account for one in-flight request.
@@ -183,7 +171,12 @@ class AccountPool:
             if not data:
                 return None
 
-            if data.get("is_quota_exceeded"):
+            # Only a real /quota/usage answer may park or un-park. When just the
+            # plan/userinfo calls succeeded there is no quota verdict, so update
+            # the metadata and leave availability exactly as it was.
+            quota_fetched = bool(data.get("quota_fetched", True))
+
+            if quota_fetched and data.get("is_quota_exceeded"):
                 await self._park_exhausted(session, acc, "quota refresh shows exhausted")
                 return data
 
@@ -209,6 +202,10 @@ class AccountPool:
             for src, dst in mapping.items():
                 if src in data and data[src] is not None:
                     setattr(acc, dst, data[src])
+
+            if not quota_fetched:
+                await session.commit()
+                return data
 
             # PAT proved healthy — drop the sticky error so the UI recovers.
             acc.last_error_message = None
@@ -304,7 +301,7 @@ class AccountPool:
         await session.commit()
 
     async def mark_quota_exceeded(self, account_id: int):
-        """Quota-exceeded signal from the API — park the account (kept, unused)."""
+        """Quota-exceeded signal from the chat/anthropic routers — park (or auto-delete)."""
         async with async_session() as session:
             acc = await session.get(Account, account_id)
             if not acc:
@@ -404,11 +401,20 @@ class AccountPool:
                             quota_used=func.coalesce(Account.quota_used, 0.0)
                             + float(credits_used),
                         )
-                        .returning(Account.quota_remaining)
+                        .returning(Account.quota_remaining, Account.is_quota_exceeded)
                         .execution_options(synchronize_session=False)
                     )
                     row = result.first()
-                    drained = row is not None and row[0] is not None and row[0] <= 0
+                    # A completion that lands after a parallel one already
+                    # parked (or auto-deleted) the account must not park it a
+                    # second time: that duplicates the pool event and, with
+                    # auto-delete on, issues a DELETE for a row that is gone.
+                    drained = (
+                        row is not None
+                        and row[0] is not None
+                        and row[0] <= 0
+                        and not bool(row[1])
+                    )
                     session.expire(acc, ["quota_remaining", "quota_used"])
                     if drained:
                         parked = await session.get(Account, account_id)
@@ -529,7 +535,7 @@ class AccountPool:
             await session.commit()
         except IntegrityError:
             await session.rollback()
-            raise ValueError("This PAT is already in the pool")
+            raise ValueError("This PAT is already in the pool") from None
         await session.refresh(account)
         await self._refresh()
         logbus.push(
@@ -597,13 +603,22 @@ class AccountPool:
             "credits_spent": credits_spent,
         }
 
+    def _refresh_interval_seconds(self) -> float:
+        # ``is_available`` is only recomputed by _refresh(); pacing it by the
+        # 5-minute quota poll made a nominal 60s cooldown last up to 300s.
+        # Recompute at cooldown granularity instead (one cheap SELECT).
+        return float(
+            max(1, min(settings.qoder_poll_interval, settings.account_cooldown_seconds))
+        )
+
     async def _refresh_if_stale(self):
+        interval = self._refresh_interval_seconds()
         now = _utcnow()
-        if (now - self._last_refresh).total_seconds() <= settings.qoder_poll_interval:
+        if (now - self._last_refresh).total_seconds() <= interval:
             return
         async with self._refresh_lock:
             now = _utcnow()
-            if (now - self._last_refresh).total_seconds() > settings.qoder_poll_interval:
+            if (now - self._last_refresh).total_seconds() > interval:
                 await self._refresh()
 
 

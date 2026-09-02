@@ -13,9 +13,8 @@ Differences handled here:
 """
 import asyncio
 import json
-import time
+import re
 import uuid
-from collections.abc import Mapping
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -78,9 +77,6 @@ def _anthropic_error(status: int, error_type: str, message: str) -> JSONResponse
         status_code=status,
         content={"type": "error", "error": {"type": error_type, "message": message}},
     )
-
-
-import re
 
 
 def _resolve_level(requested: str) -> str:
@@ -295,18 +291,30 @@ def _convert_tool_choice(tool_choice: Optional[dict]) -> Optional[object]:
 
 
 def _reasoning_effort_from_thinking(thinking: Optional[dict]) -> Optional[str]:
+    """Map Anthropic ``thinking`` onto a Qoder reasoning effort.
+
+    ``None`` means "client did not say" and lets ``_normalize_effort`` pick the
+    model peak.  An explicit ``disabled`` must actually turn thinking off, and
+    a budget large enough to be "think as much as you want" maps to the same
+    peak the router uses by default instead of a lower tier.
+    """
     if not isinstance(thinking, dict):
         return None
-    if thinking.get("type") != "enabled":
+    thinking_type = thinking.get("type")
+    if thinking_type == "disabled":
+        return "none"
+    if thinking_type != "enabled":
         return None
     budget = thinking.get("budget_tokens")
     if isinstance(budget, (int, float)):
+        if budget >= 32_000:
+            return "max"
         if budget >= 10_000:
             return "high"
         if budget >= 4_000:
             return "medium"
         return "low"
-    return "high"
+    return None
 
 
 def _stop_reason_openai_to_anthropic(finish_reason: Optional[str], has_tools: bool) -> str:

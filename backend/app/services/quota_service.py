@@ -159,7 +159,13 @@ async def fetch_plan_quota(pat: str) -> Optional[dict]:
             if not plan and not quota and not userinfo:
                 return None
 
-            result = {}
+            # Callers must know which endpoints actually answered: a missing
+            # ``is_quota_exceeded`` because /quota/usage failed is not the same
+            # as "the account has credits again".
+            result: dict = {
+                "plan_fetched": bool(plan),
+                "quota_fetched": bool(quota),
+            }
             if plan:
                 result.update(_parse_plan(plan))
             if quota:

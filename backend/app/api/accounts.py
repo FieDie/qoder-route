@@ -234,7 +234,10 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
     # Credits on Qoder are one-shot, so a failed plan fetch must not skip
     # this check and let a free PAT into the pool.
     pq = await quota_service.fetch_plan_quota(body.pat_token)
-    if pq is None:
+    # fetch_plan_quota returns a partial dict when only userinfo/quota answered;
+    # without the plan payload the tier is unknown and the free-tier check below
+    # would silently pass.
+    if pq is None or not pq.get("plan_fetched", True):
         raise HTTPException(
             status_code=400,
             detail="Could not fetch plan/quota from Qoder — not added. Retry when the API is reachable.",
@@ -258,8 +261,13 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await pool.refresh_quota(account.id)
-    acc = await pool.get_account_by_id(db, account.id)
-    return AccountOut.model_validate(acc or account)
+    # refresh_quota wrote through its own session; ``db`` still holds the
+    # pre-quota row in its identity map, so re-read it before responding.
+    try:
+        await db.refresh(account)
+    except Exception:  # noqa: BLE001 — auto-delete may have removed it already
+        pass
+    return AccountOut.model_validate(account)
 
 
 # ── Item routes LAST ──

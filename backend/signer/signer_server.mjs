@@ -72,6 +72,21 @@ const { instance } = await WebAssembly.instantiate(buf, { "./qoder_auth_wasm_bg.
 wasm = instance.exports;
 
 const addStack = (n) => wasm.__wbindgen_add_to_stack_pointer(n);
+// wasm-bindgen ships its runtime helpers under numbered names; by arity they
+// are malloc(size, align) = export2, realloc = export3, free(ptr, len, align) = export4.
+// Rust hands ownership of every returned String / Vec<u8> to JS, so each one
+// must be released here or the wasm heap grows by the payload size per call
+// (linear memory never shrinks, so the process eventually hits the 4 GB cap).
+const wasmFree = (ptr, len) => { if (len) wasm.__wbindgen_export4(ptr, len, 1); };
+
+// Result<_, JsValue> puts the error as a heap handle; take it off the heap so
+// failures do not leak slots either, and surface the real message.
+function takeError(idx) {
+  const err = getObject(idx);
+  dropObject(idx);
+  if (err instanceof Error) return err;
+  return new Error(typeof err === "string" && err ? err : "wasm call failed");
+}
 
 function stackStringCall(fn, args) {
   const sp = addStack(-16);
@@ -82,8 +97,10 @@ function stackStringCall(fn, args) {
   const r2 = view().getInt32(sp + 8, true);
   const r3 = view().getInt32(sp + 12, true);
   addStack(16);
-  if (r3) throw new Error("wasm call failed");
-  return getStr(r0, r1);
+  if (r3) throw takeError(r2);
+  const s = getStr(r0, r1);
+  wasmFree(r0, r1);
+  return s;
 }
 
 const generateRuntimeAuthFields = (subsetJson) =>
@@ -100,9 +117,10 @@ function newContext(machineId, cosyVersion, userInfoJson, clientMetaJson) {
   const d = passString(clientMetaJson), dl = GLOBAL_LEN;
   wasm.qodercontext_new(sp, a, al, b, bl, c, cl, d, dl);
   const r0 = view().getInt32(sp + 0, true);
+  const r1 = view().getInt32(sp + 4, true);
   const r2 = view().getInt32(sp + 8, true);
   addStack(16);
-  if (r2) throw new Error("qodercontext_new failed");
+  if (r2) throw takeError(r1);
   return r0 >>> 0;
 }
 
@@ -114,9 +132,10 @@ function prepareInferRequest(ctxPtr, baseUrl, bodyJson, modelKey, modelSource) {
   const d = passString(modelSource), dl = GLOBAL_LEN;
   wasm.qodercontext_prepareInferRequest(sp, ctxPtr, a, al, b, bl, c, cl, d, dl);
   const r0 = view().getInt32(sp + 0, true);
+  const r1 = view().getInt32(sp + 4, true);
   const r2 = view().getInt32(sp + 8, true);
   addStack(16);
-  if (r2) throw new Error("prepareInferRequest failed");
+  if (r2) throw takeError(r1);
   return r0 >>> 0;
 }
 
@@ -127,11 +146,15 @@ function resultUrl(rr) {
   const l = view().getInt32(sp + 4, true);
   const s = getStr(p, l);
   addStack(16);
+  wasmFree(p, l);
   return s;
 }
 
 function resultHeaders(rr) {
-  const m = getObject(wasm.requestresult_headers(rr));
+  // The getter returns a fresh heap handle each call (wasm-bindgen "take" semantics).
+  const idx = wasm.requestresult_headers(rr);
+  const m = getObject(idx);
+  dropObject(idx);
   return m instanceof Map ? Object.fromEntries(m) : m;
 }
 
@@ -142,6 +165,7 @@ function resultBody(rr) {
   const l = view().getInt32(sp + 4, true);
   const bytes = mem().slice(p, p + l);
   addStack(16);
+  wasmFree(p, l);
   return Buffer.from(bytes);
 }
 
@@ -244,7 +268,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === "/health") {
-      return send(200, { ok: true, contexts: contexts.size, default_cosy_version: DEFAULT_COSY_VERSION });
+      return send(200, {
+        ok: true,
+        contexts: contexts.size,
+        default_cosy_version: DEFAULT_COSY_VERSION,
+        wasm_memory_bytes: wasm.memory.buffer.byteLength,
+      });
     }
 
     send(404, { error: "not found" });

@@ -50,7 +50,13 @@ QoderRoute/
 │   │   └── signer.log/pid/.start.lock (runtime files)
 │   ├── tests/                        # [gitignored, local only] pytest regression suite
 │   │   ├── conftest.py
+│   │   ├── test_activity_stats.py
 │   │   ├── test_model_catalog.py
+│   │   ├── test_pool_guards.py       # create_account plan/free-tier guards, account naming
+│   │   ├── test_qoder_version.py
+│   │   ├── test_queue_parsing.py
+│   │   ├── test_quota_swap_and_counter.py
+│   │   ├── test_review_regressions.py # error scoping, partial quota refresh, duplicate park, thinking map
 │   │   ├── test_runtime_settings.py
 │   │   ├── test_signer_resilience.py
 │   │   └── test_thinking_regression.py
@@ -102,7 +108,7 @@ QoderRoute/
   cd backend && ./start.sh      # Linux / macOS
   cd backend && start.bat       # Windows
   ```
-  Runs `uvicorn app.main:app` bound to `0.0.0.0:8010`, writes logs to `data/server.log`.
+  Runs `uvicorn app.main:app` bound to `0.0.0.0:8010`, writes logs to `data/server.log`. The interpreter is `backend/.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) when the venv exists, otherwise `python3` / `py -3`; `PYTHON=/path/to/python` overrides on POSIX.
 
 - **Graceful Restart:**  
   ```bash
@@ -173,15 +179,17 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 - **Pool lifecycle log lines:** `account_pool` emits `logbus.push(..., source="pool", action=...)` for `added`, `removed`, `parked`, `auto_deleted`, `cooldown`, `restored` (plus optional `reason`). The Logs **Pool** tab filters `source === "pool"`. These are ring-buffer only.
 
-- **Signer Lifecycle:** The signer is a Node.js server at `127.0.0.1:8123`. It is started exactly once by `signer_service.ensure_signer()` which uses a filesystem lock (`backend/signer/.start.lock`) to avoid duplicate spawns. A background supervisor (`signer_supervisor()`) monitors health and restarts the signer if it exits unexpectedly. Because the signer is detached (`start_new_session=True`), it survives backend process replacement. `POST /infer` takes `{jt, uid, machine_id, base_url, body_json, model_key, model_source, cosy_version}` and returns `{url, headers, body_b64}`. WASM contexts are cached by `jt + machine_id + cosy_version`.
+- **Signer Lifecycle:** The signer is a Node.js server at `127.0.0.1:8123`. It is started exactly once by `signer_service.ensure_signer()` which uses a filesystem lock (`backend/signer/.start.lock`; `fcntl.flock` on POSIX, `msvcrt.locking` on Windows — never import `fcntl` unconditionally, the `.bat` scripts depend on that) to avoid duplicate spawns. A background supervisor (`signer_supervisor()`) monitors health and restarts the signer if it exits unexpectedly. Because the signer is detached (`start_new_session=True` on POSIX, `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows), it survives backend process replacement. `POST /infer` takes `{jt, uid, machine_id, base_url, body_json, model_key, model_source, cosy_version}` and returns `{url, headers, body_b64}`. WASM contexts are cached by `jt + machine_id + cosy_version`. `GET /health` reports `wasm_memory_bytes`.
+
+- **Signer WASM glue must free what Rust returns:** every `String` / `Vec<u8>` coming back from the wasm-bindgen module (`stackStringCall`, `resultUrl`, `resultBody`) is owned by JS and released via `wasmFree` (`__wbindgen_export4`, i.e. `__wbindgen_free`); JS-object results (`requestresult_headers`) are taken off the heap with `dropObject`. Skipping either grows linear memory by the request size on every `/infer` (verified: ~+90 MB per 300 calls with 200 KB bodies) until the sidecar dies. Keep the `wasm_memory_bytes` health field flat when touching this file.
 
 ## Gotchas
 
 - **429 / Rate-Limit Is NOT Quota Exhaustion**  
   `looks_like_quota_error()` deliberately excludes 429/rate-limit markers — those are transient backpressure handled via `looks_like_rate_limit()`. `classify_chat_error()` maps them to `infrastructure`, so they never park, never auto-delete, and never increment `consecutive_failures` / cooldown. Only genuine quota markers (`quota`, `credits exhausted`, `isquotaexceeded`, `insufficient credits`) park an account. Never add rate-limit patterns back into the quota matcher: with auto-delete enabled that silently destroys healthy accounts.
 
-- **416 Session Blocked and Truncated Streams Are Infrastructure**  
-  `"416" + "session blocked"` and a stream that ends before `[DONE]` / `finish_reason` (`error_scope: "infrastructure"` in `direct_client`) must not call `mark_failure`. Same for signer-unavailable errors. Do not treat them as account health.
+- **416 Session Blocked, Truncated Streams, 5xx and Transport Errors Are Infrastructure**  
+  `"416" + "session blocked"`, a stream that ends before `[DONE]` / `finish_reason`, upstream HTTP/SSE-wrapper statuses `>= 500`, a connection dropped mid-stream (`stream interrupted: <ExceptionType>...`) and a request that never reached upstream (`upstream request failed: <ExceptionType>...`) all carry `error_scope: "infrastructure"` out of `direct_client.run_infer` and must not call `mark_failure`. Same for signer-unavailable errors. `classify_chat_error` defaults unknown messages to `"account"`, so the scope tag on the event is what protects the PAT — keep it when adding new error paths. `4xx` other than 403-quota (e.g. 401) stays an account error. Note `str(httpx.ReadTimeout())` is empty; `_describe_exception` always includes the exception type so the message is never blank.
 
 - **Backend Datetimes Are Naive UTC**  
   `_utcnow()` stores naive UTC datetimes; JSON responses contain strings like `"2026-08-11T10:00:00"` with no offset marker. The frontend MUST parse them as UTC (`lib/utils.ts: parseUtc` appends `Z`) — plain `new Date(s)` would parse them as browser-local time. Epoch-float fields (`plan_end_date`, `quota_expires_at`, `*_fetched_at`) are milliseconds and unaffected.
@@ -200,8 +208,14 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 - **Exhausted Accounts Are Not Polled**  
   The background quota loop (`_quota_refresher`) only refreshes non-exhausted accounts (`is_quota_exceeded == False`). Exhausted accounts remain untouched until manually refreshed via `/api/accounts/{id}/quota/refresh` — which, when credits are back, also restores `is_available`, clears cooldown/failures, and rejoins routing immediately. With `accounts_auto_delete_exhausted` enabled, parking is replaced by deletion.
 
+- **Partial Quota Fetches Carry No Verdict**  
+  `quota_service.fetch_plan_quota` returns a dict as soon as any of `/user/plan`, `/quota/usage`, `/userinfo` answers and flags which did via `plan_fetched` / `quota_fetched`. `refresh_quota` only parks or un-parks when `quota_fetched` is true; otherwise it just stores the plan/email metadata and leaves `is_available` / cooldown / failures untouched (a missing `is_quota_exceeded` key is *not* "credits are back"). `create_account` refuses a PAT when `plan_fetched` is false because the free-tier check needs the tier. Mocks that omit the flags are treated as complete fetches.
+
 - **Concurrent Delete vs In-Flight Request**  
-  `mark_success` / `mark_failure` catch `StaleDataError`: an account deleted (manual or auto-sweep) while its request was streaming must not turn a successful completion into a 500. Keep these handlers in place when editing bookkeeping code. Lifetime `PoolCounter` credits use an atomic SQLite upsert for the same reason (parallel fill-first completions).
+  `mark_success` / `mark_failure` catch `StaleDataError`: an account deleted (manual or auto-sweep) while its request was streaming must not turn a successful completion into a 500. Keep these handlers in place when editing bookkeeping code. Lifetime `PoolCounter` credits use an atomic SQLite upsert for the same reason (parallel fill-first completions). The local quota drain also `RETURNING`s `is_quota_exceeded`, so a completion that lands after a parallel one already parked the account does not park (or, with auto-delete, `DELETE`) it a second time.
+
+- **Cooldown Recompute Pacing**  
+  `mark_failure` sets `cooldown_until` and flips `is_available = False`; only `_refresh()` flips it back. `_refresh_if_stale` therefore paces itself by `min(qoder_poll_interval, account_cooldown_seconds)` (one cheap SELECT), not by the 5-minute quota poll — otherwise a nominal 60s cooldown lasted up to 300s.
 
 - **Account Deletion Invalidates Multiple Query Keys**  
   Deleting an account triggers immediate cache invalidation in `useDeleteAccount()`:
@@ -221,6 +235,9 @@ The regression suite is local and gitignored. Run it only when `backend/tests/` 
 
 - **Claude Code Model Suffixes**  
   Anthropic `_resolve_level` strips trailing `[1m]` / `[200k]`-style suffixes (`\[\d+[km]\]$`) before catalog lookup and Claude aliases (`opus` → `ultimate`, `sonnet` → `performance`, `haiku` → `efficient`). Keep that strip; otherwise `glm-5.3[1m]` falls through to `auto`.
+
+- **Anthropic `thinking` → Reasoning Effort**  
+  `_reasoning_effort_from_thinking`: absent → `None` (model peak via `_normalize_effort`), `{"type":"disabled"}` → `"none"` (thinking really off), `enabled` without budget → `None`, budgets map `<4k` low / `<10k` medium / `<32k` high / `>=32k` max. An explicit disable must never come out as `max`, and a large budget must not be weaker than omitting `thinking`.
 
 - **`tool_choice` Is Honored on Both Routes**  
   OpenAI `ChatCompletionRequest.tool_choice` and Anthropic `tool_choice` (converted to the OpenAI shape) are passed into `run_infer` and into the native body. Do not drop the field.

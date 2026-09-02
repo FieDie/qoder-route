@@ -23,7 +23,7 @@ QoderRoute is an OpenAI-compatible and Anthropic-compatible proxy router for Qod
   Adding an account validates the PAT over HTTP (job-token exchange + userinfo — no CLI required) and then checks the plan. The account name is optional: when omitted, the router fills it from the Qoder profile (`/api/v1/userinfo`). Accounts on the free tier (`personal_standard`, no paid plan) are rejected with a clear error instead of being parked as exhausted right away. Accounts with a plan but no remaining quota are still added and parked; they rejoin when you refresh them after credits return.
 
 - **Rate-Limit vs Quota Distinction**  
-  Transient 429 / rate-limit responses never park, delete, or cooldown an account — only genuine quota-exhaustion signals do (quota / credits-exhausted markers). Rate limits are treated as infrastructure backpressure and left for the client to retry.
+  Transient 429 / rate-limit responses never park, delete, or cooldown an account — only genuine quota-exhaustion signals do (quota / credits-exhausted markers). Rate limits, upstream 5xx responses, connection failures and mid-stream drops are treated as infrastructure problems and left for the client to retry; they do not count toward an account's failure budget.
 
 - **Model Catalog & Credit Multipliers**
   The Models page lists all currently mirrored Qoder routes with their canonical key, display name, base credit factor, context capability, vision support, and separate Reasoning/Thinking flags. The same catalog drives request routing, `/v1/models`, `/api/models/catalog`, and account model selectors.
@@ -136,7 +136,7 @@ cd backend
 # start.bat         # Windows
 ```
 
-The server binds to `0.0.0.0:8010`. Use `./restart.sh` (or `restart.bat` on Windows) for a graceful restart that preserves the signer process.
+The server binds to `0.0.0.0:8010`. Use `./restart.sh` (or `restart.bat` on Windows) for a graceful restart that preserves the signer process. The scripts pick `backend/.venv` automatically when it exists (otherwise `python3` / `py -3`; set `PYTHON=/path/to/python` to override on Linux/macOS).
 
 **Development (auto-reload):**
 

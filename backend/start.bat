@@ -63,6 +63,11 @@ REM ── helpers ────────────────────�
 
 :resolve_python
 set "PYEXE="
+REM Prefer the project venv (README setup) before whatever is on PATH.
+if exist "%CD%\.venv\Scripts\python.exe" (
+    set "PYEXE=%CD%\.venv\Scripts\python.exe"
+    exit /b 0
+)
 where py >nul 2>&1
 if not errorlevel 1 (
     for /f "delims=" %%I in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PYEXE=%%I"
