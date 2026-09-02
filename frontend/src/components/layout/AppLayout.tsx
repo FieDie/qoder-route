@@ -30,11 +30,20 @@ function PageRoutes() {
   const sectionKey = sectionOf(location)
   const displayKey = sectionOf(displayLoc)
 
+  // Same-section search/hash updates (Logs drawer, Pool toggle, account chip)
+  // must reach child routes immediately. The fade effect only watches section
+  // keys, so a ?request= change would otherwise stick on a stale displayLoc.
+  if (
+    sectionKey === displayKey &&
+    (displayLoc.pathname !== location.pathname ||
+      displayLoc.search !== location.search ||
+      displayLoc.hash !== location.hash)
+  ) {
+    setDisplayLoc(location)
+  }
+
   useEffect(() => {
-    if (sectionKey === displayKey) {
-      setDisplayLoc(locRef.current)
-      return
-    }
+    if (sectionKey === displayKey) return
 
     const id = ++genRef.current
     setVisible(false)

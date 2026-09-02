@@ -233,7 +233,11 @@ export function Logs() {
       if (!res.ok) throw new Error('Failed to load logs')
       return res.json()
     },
-    staleTime: 0,
+    // SSE is the live source. A window-focus refetch would replace the 1500
+    // local buffer with the server's last 500 and ignore Pause.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   })
 
   useEffect(() => {
